@@ -26,7 +26,7 @@ go doc ./internal/llm.AuthorizeAccessToModel
 ## Project Structure
 
 ```
-copilot-client
+copilot-proxy
 ├── cmd
 │   └── main.go          # Entry point of the application
 ├── pkg                  # Public packages
@@ -54,8 +54,8 @@ copilot-client
 1. Clone the repository:
    
    ```
-   git clone https://github.com/yourusername/copilot-client.git
-   cd copilot-client
+   git clone https://github.com/anschmieg/copilot-proxy.git
+   cd copilot-proxy
    ```
 
 2. Install dependencies:
@@ -67,7 +67,7 @@ copilot-client
 3. Build the application:
    
    ```
-   go build -o copilot-client cmd/main.go
+   go build -o copilot-proxy cmd/main.go
    ```
 
 ## Basic Usage
@@ -75,7 +75,7 @@ copilot-client
 To start the server:
 
 ```bash
-./copilot-client
+./copilot-proxy
 ```
 
 By default, the server runs on port 8080. Configure using environment variables:
