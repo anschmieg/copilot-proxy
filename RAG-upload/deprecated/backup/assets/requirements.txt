@@ -1,0 +1,4 @@
+python-dotenv
+pinecone
+pinecone-client
+pinecone-plugin-assistant
