@@ -11,3 +11,8 @@ __pychache__
 **/__pycache__
 .vscode/**
 .idea/**
+
+.env
+!.env.template
+**/.env
+!**/.env.template
