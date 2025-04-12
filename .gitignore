@@ -5,13 +5,6 @@ __pychache__
 .vscode
 .idea
 
-**/.venv
-**/.venv/*
-**/.DS_Store
-**/__pycache__
-.vscode/**
-.idea/**
-
 .env
 !.env.template
 **/.env
