@@ -2,8 +2,12 @@
 .venv/*
 .DS_Store
 __pychache__
+.vscode
+.idea
 
 **/.venv
 **/.venv/*
 **/.DS_Store
 **/__pycache__
+.vscode/**
+.idea/**
