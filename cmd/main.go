@@ -2,21 +2,65 @@ package main
 
 import (
 	"context"
-	"copilot-proxy/internal"
-	"copilot-proxy/internal/app"
-	"copilot-proxy/internal/auth"
-	"copilot-proxy/internal/llm"
-	"copilot-proxy/internal/rpc"
-	"copilot-proxy/pkg/utils"
+	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+	"copilot-proxy/internal"
+	"copilot-proxy/internal/app"
+	"copilot-proxy/internal/auth"
+	"copilot-proxy/internal/llm"
+	"copilot-proxy/internal/rpc"
+	"copilot-proxy/pkg/utils"
 )
 
 func main() {
+	// Define CLI flags
+	getAPIKey := flag.String("get-api-key", "", "Retrieve an API key using the provided OAuth token")
+	testAuth := flag.String("test-auth", "", "Test the Authorization/API key")
+	testCall := flag.String("test-call", "", "Make a test call to verify the API is working")
+
+	flag.Parse()
+
+	// Initialize the app
+	a := app.NewApp()
+
+	if *getAPIKey != "" {
+		// Get API key using OAuth token
+		apiKey, err := a.GetAPIKey(*getAPIKey)
+		if err != nil {
+			log.Fatalf("Failed to retrieve API key: %v", err)
+		}
+		fmt.Printf("Retrieved API key: %s\n", apiKey)
+		os.Exit(0)
+	}
+
+	if *testAuth != "" {
+		// Test the Authorization/API key
+		if !a.Auth.VerifyAPIKey(*testAuth) {
+			log.Fatalf("Invalid API key")
+		}
+		fmt.Println("API key is valid")
+		os.Exit(0)
+	}
+
+	if *testCall != "" {
+		// Make a test call to verify the API is working
+		response, err := a.TestAPI(*testCall)
+		if err != nil {
+			log.Fatalf("Test call failed: %v", err)
+		}
+		fmt.Printf("Test call response: %s\n", response)
+		os.Exit(0)
+	}
+
+	// Default behavior if no flags are provided
+	fmt.Println("No flags provided. Use --help for usage information.")
+
 	// Create a context that will be canceled on program termination
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -35,9 +79,6 @@ func main() {
 
 	// Initialize the authentication service
 	_ = auth.NewService()
-
-	// Initialize app
-	a := app.NewApp()
 
 	// Check for GitHub Copilot token in local config if not in environment
 	if os.Getenv("COPILOT_API_KEY") == "" {
