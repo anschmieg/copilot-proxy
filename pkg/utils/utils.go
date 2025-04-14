@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"strings"
 )
 
 // CopilotChatCompletionURL is the endpoint for GitHub Copilot chat completions.
@@ -43,12 +46,27 @@ func SomeUtilityFunction(input string) string {
 //	}
 //	response, err := CallOpenAIEndpoint(apiKey, payload)
 func CallOpenAIEndpoint(apiKey string, payload map[string]interface{}) (map[string]interface{}, error) {
-	// Ensure payload adheres to OpenAI schema
-	if _, ok := payload["model"]; !ok {
-		return nil, errors.New("payload must include 'model'")
-	}
-	if _, ok := payload["messages"]; !ok {
-		return nil, errors.New("payload must include 'messages'")
+	// Extract provider_request if it exists
+	providerRequest, hasProviderRequest := payload["provider_request"].(map[string]interface{})
+	if hasProviderRequest {
+		// Use the inner provider_request
+		if _, ok := providerRequest["model"]; !ok {
+			return nil, errors.New("provider_request must include 'model'")
+		}
+		if _, ok := providerRequest["messages"]; !ok {
+			return nil, errors.New("provider_request must include 'messages'")
+		}
+
+		// Use the provider_request for the actual API call
+		payload = providerRequest
+	} else {
+		// Ensure payload adheres to OpenAI schema
+		if _, ok := payload["model"]; !ok {
+			return nil, errors.New("payload must include 'model'")
+		}
+		if _, ok := payload["messages"]; !ok {
+			return nil, errors.New("payload must include 'messages'")
+		}
 	}
 
 	body, err := json.Marshal(payload)
@@ -61,7 +79,16 @@ func CallOpenAIEndpoint(apiKey string, payload map[string]interface{}) (map[stri
 		return nil, err
 	}
 
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	// Ensure the API key is properly formatted for GitHub Copilot
+	// If it's already a full Copilot token, use it directly
+	if strings.HasPrefix(apiKey, "tid=") {
+		// This is already a full GitHub Copilot token, use it directly
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	} else {
+		// For other API keys that might not have the Bearer prefix
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{}
@@ -72,7 +99,8 @@ func CallOpenAIEndpoint(apiKey string, payload map[string]interface{}) (map[stri
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, errors.New("failed to call OpenAI endpoint: " + resp.Status)
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to call OpenAI endpoint: %s - %s", resp.Status, string(bodyBytes))
 	}
 
 	var response struct {

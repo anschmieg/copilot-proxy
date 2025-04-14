@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,16 +67,93 @@ func (s *Service) Authenticate() error {
 	return nil
 }
 
-// VerifyAPIKey checks the provided API key against the comma-separated list in the VALID_API_KEYS environment variable.
-func VerifyAPIKey(apiKey string) bool {
+// VerifyAppAPIKey checks if the provided API key is valid for accessing this app's API.
+// This function verifies keys against the VALID_API_KEYS environment variable, which
+// should contain a comma-separated list of valid API keys.
+//
+// If the DISABLE_AUTH environment variable is set to "true" or "1", all authentication
+// checks will be bypassed and any API key will be considered valid.
+//
+// This function is used to authenticate API requests to the proxy application itself,
+// not for authenticating with external services like GitHub Copilot.
+//
+// Parameters:
+//   - apiKey: The API key to validate
+//
+// Returns:
+//   - bool: true if the API key is valid or if authentication is disabled, false otherwise
+func VerifyAppAPIKey(apiKey string) bool {
+	// Check if authorization is disabled globally
+	if disableAuth := os.Getenv("DISABLE_AUTH"); disableAuth == "true" || disableAuth == "1" {
+		fmt.Println("Authorization is disabled, accepting all API keys")
+		return true
+	}
+
+	// Check environment variables
 	validKeys := os.Getenv("VALID_API_KEYS")
+	if validKeys == "" {
+		fmt.Println("No valid API keys configured in environment")
+		return false
+	}
+
+	// Debug output to help diagnose issues
+	fmt.Printf("Validating API key: %s against environment keys\n", apiKey)
+
 	keys := strings.Split(validKeys, ",")
 	for _, key := range keys {
-		if apiKey == strings.TrimSpace(key) {
+		trimmedKey := strings.TrimSpace(key)
+		if apiKey == trimmedKey {
 			return true
 		}
 	}
+
 	return false
+}
+
+// VerifyCopilotAPIKey checks if the provided API key is a valid GitHub Copilot token.
+// This function validates tokens in the format "tid=token_id;exp=expiration;..."
+// by checking the token's format and expiration timestamp.
+//
+// The GitHub Copilot token format includes several components:
+//   - tid: Token ID
+//   - exp: Expiration timestamp (Unix format)
+//   - sku: Subscription type
+//   - Various feature flags and configuration parameters
+//
+// Parameters:
+//   - apiKey: The GitHub Copilot token to validate
+//
+// Returns:
+//   - bool: true if the token is valid and not expired, false otherwise
+func VerifyCopilotAPIKey(apiKey string) bool {
+	// Check if it's a GitHub Copilot token
+	if strings.HasPrefix(apiKey, "tid=") {
+		// Extract the token ID and expiration
+		parts := strings.Split(apiKey, ";")
+		if len(parts) >= 2 {
+			expPart := parts[1]
+
+			// Check if expiration part exists and is properly formatted
+			if strings.HasPrefix(expPart, "exp=") {
+				expStr := strings.TrimPrefix(expPart, "exp=")
+				expInt, err := strconv.ParseInt(expStr, 10, 64)
+				if err == nil {
+					expTime := time.Unix(expInt, 0)
+					if expTime.After(time.Now()) {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// VerifyAPIKey checks the provided API key for compatibility with either this app's API
+// or the GitHub Copilot API. This is maintained for backward compatibility.
+func VerifyAPIKey(apiKey string) bool {
+	return VerifyAppAPIKey(apiKey) || VerifyCopilotAPIKey(apiKey)
 }
 
 // GenerateAccessToken creates a new access token for a user

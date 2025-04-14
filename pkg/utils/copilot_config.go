@@ -5,9 +5,11 @@ package utils
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // CopilotConfig represents the structure of the GitHub Copilot config file.
@@ -35,7 +37,12 @@ type TokenInfo struct {
 //
 // The function looks for a config file at the standard location for the current platform:
 // - Windows: %APPDATA%\GitHub Copilot\apps.json
-// - macOS/Linux: ~/.config/github-copilot/apps.json
+// - macOS: ~/.config/github-copilot/apps.json
+// - Linux: ~/.config/github-copilot/apps.json
+//
+// The token retrieved is in the format:
+// tid=<token-id>;exp=<expiration-timestamp>;sku=<subscription-type>;proxy-ep=<proxy-endpoint>;st=<status>;
+// followed by various feature flags (chat=1;cit=1;etc.)
 //
 // Returns the token string or an error if the token couldn't be retrieved.
 //
@@ -100,4 +107,50 @@ func getCopilotConfigPath() (string, error) {
 	}
 
 	return filepath.Join(configDir, "apps.json"), nil
+}
+
+// GetCopilotOAuthToken attempts to read a GitHub OAuth token from various sources.
+// It checks environment variables (COPILOT_OAUTH_TOKEN or OAUTH_TOKEN) and will
+// eventually try to read from the VS Code GitHub Copilot extension configuration.
+//
+// Returns the OAuth token if found, or an empty string and error if not found.
+func GetCopilotOAuthToken() (string, error) {
+	// First check environment variables
+	oauthToken := os.Getenv("COPILOT_OAUTH_TOKEN")
+	if oauthToken != "" {
+		// Clean the token if it has quotes (which might happen in .env files)
+		oauthToken = strings.Trim(oauthToken, "'\"")
+		fmt.Printf("Found COPILOT_OAUTH_TOKEN in environment variables: %s\n", maskToken(oauthToken))
+		return oauthToken, nil
+	}
+
+	oauthToken = os.Getenv("OAUTH_TOKEN")
+	if oauthToken != "" {
+		// Clean the token if it has quotes (which might happen in .env files)
+		oauthToken = strings.Trim(oauthToken, "'\"")
+		fmt.Printf("Found OAUTH_TOKEN in environment variables: %s\n", maskToken(oauthToken))
+		return oauthToken, nil
+	}
+
+	// TODO: Add logic to extract OAuth token from VS Code Copilot extension
+	// This would require reading the configuration files
+
+	return "", errors.New("no OAuth token found in environment variables")
+}
+
+// maskToken masks most of a token for safe logging, showing only the first 4 and last 4 characters
+func maskToken(token string) string {
+	if len(token) <= 8 {
+		return "****"
+	}
+	return token[:4] + "..." + token[len(token)-4:]
+}
+
+// MaskToken masks most of a token for safe logging, showing only the first 4 and last 4 characters
+// This is a public version of the maskToken function that can be used by other packages
+func MaskToken(token string) string {
+	if len(token) <= 8 {
+		return "****"
+	}
+	return token[:4] + "..." + token[len(token)-4:]
 }

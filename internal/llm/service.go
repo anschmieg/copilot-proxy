@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -204,7 +205,19 @@ func normalizeModelName(provider models.LanguageModelProvider, name string) stri
 	return name
 }
 
-// callCopilotAPI calls the GitHub Copilot API
+// callCopilotAPI calls the GitHub Copilot API for chat completions.
+//
+// This method sends a request to the GitHub Copilot chat completions endpoint
+// using the provided API key (which should be obtained via GetAPIKey or from
+// the local configuration).
+//
+// Parameters:
+//   - providerRequest: A JSON string containing the completion request parameters
+//
+// The GitHub Copilot chat API expects requests in a similar format to OpenAI's
+// chat completion API, with a model name and an array of messages.
+//
+// Authorization is done using a "Bearer" token format with the Copilot API key.
 func (s *Service) callCopilotAPI(providerRequest string) (*http.Response, error) {
 	apiKey := s.config.CopilotAPIKey
 	if apiKey == "" {
@@ -333,4 +346,38 @@ func (s *Service) ProcessStreamingResponse(resp *http.Response, userID uint64, p
 	// For simplicity, we'll just return the response body as-is
 
 	return resp.Body, nil
+}
+
+// SubmitTestPrompt sends a test prompt to the Copilot API and returns the response.
+func (s *Service) SubmitTestPrompt(prompt string) (string, error) {
+	log.Println("Preparing test prompt request...")
+
+	// Construct the provider request payload
+	requestPayload := map[string]interface{}{
+		"model": "copilot-chat",
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+	}
+
+	// Serialize the payload to JSON
+	requestBody, err := json.Marshal(requestPayload)
+	if err != nil {
+		return "", fmt.Errorf("failed to serialize request payload: %w", err)
+	}
+
+	// Call the Copilot API
+	response, err := s.callCopilotAPI(string(requestBody))
+	if err != nil {
+		return "", fmt.Errorf("failed to call Copilot API: %w", err)
+	}
+	defer response.Body.Close()
+
+	// Read and return the response body
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	return string(responseBody), nil
 }
