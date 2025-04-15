@@ -125,7 +125,7 @@ func (a *App) handleOpenAI(w http.ResponseWriter, r *http.Request) {
 	// If this is a Copilot request, we need to use the Copilot API key
 	if provider == "copilot" {
 		// Get a valid Copilot API key using our prioritized logic
-		copilotKey, err := a.GetCopilotApiKey()
+		copilotKey, err := a.GetCopilotAPIKey()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -212,13 +212,13 @@ func (a *App) GetAPIKey(oauthToken string) (string, error) {
 	return response.Token, nil
 }
 
-// GetCopilotApiKey retrieves a valid GitHub Copilot API key following a priority order:
+// GetCopilotAPIKey retrieves a valid GitHub Copilot API key following a priority order:
 // 1. First check for direct API key in environment variables
 // 2. Then try to use OAuth token from environment to get an API key
 // 3. Finally try to read OAuth token from Copilot config and use it to get an API key
 //
 // Returns the Copilot API key if successful or an error if all methods fail.
-func (a *App) GetCopilotApiKey() (string, error) {
+func (a *App) GetCopilotAPIKey() (string, error) {
 	// Step 1: Check if we already have a Copilot API key in environment variables
 	apiKey := os.Getenv("COPILOT_API_KEY")
 	if apiKey != "" {

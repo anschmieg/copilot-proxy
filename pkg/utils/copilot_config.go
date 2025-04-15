@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // CopilotConfig represents the structure of the GitHub Copilot config file.
@@ -146,11 +148,104 @@ func maskToken(token string) string {
 	return token[:4] + "..." + token[len(token)-4:]
 }
 
-// MaskToken masks most of a token for safe logging, showing only the first 4 and last 4 characters
-// This is a public version of the maskToken function that can be used by other packages
+// MaskToken masks a token for display by showing only the first and last few characters
+// This is used for debugging purposes to show token format without revealing the entire token
 func MaskToken(token string) string {
-	if len(token) <= 8 {
-		return "****"
+	if len(token) < 10 {
+		return "***" // Too short to safely show anything
 	}
+
+	// For tokens with "tid=" prefix, keep that visible
+	if len(token) >= 4 && token[:4] == "tid=" {
+		// Show tid= prefix, first few chars of the ID, and last few chars
+		parts := strings.Split(token, ";")
+		if len(parts) > 0 {
+			tidPart := parts[0]
+			if len(tidPart) > 12 {
+				return tidPart[:8] + "..." + tidPart[len(tidPart)-4:] + ";***"
+			}
+		}
+	}
+
+	// For standard tokens, show first/last few chars
 	return token[:4] + "..." + token[len(token)-4:]
+}
+
+// ValidateCopilotToken checks if a Copilot token is valid.
+// It parses the token format and checks if it's expired.
+//
+// Parameters:
+//   - token: The Copilot token string
+//
+// Returns true if the token is valid and not expired, false otherwise.
+func ValidateCopilotToken(token string) bool {
+	// Check basic format: should start with "tid="
+	if !strings.HasPrefix(token, "tid=") {
+		return false
+	}
+
+	// Extract expiration time from the token
+	// The token has format: tid=<token-id>;exp=<expiration-timestamp>;sku=<subscription-type>;...
+	expIndex := strings.Index(token, ";exp=")
+	if expIndex == -1 {
+		return false
+	}
+
+	// Find the end of the expiration timestamp
+	expStart := expIndex + 5 // length of ";exp="
+	expEnd := strings.Index(token[expStart:], ";")
+	if expEnd == -1 {
+		return false
+	}
+	expEnd += expStart
+
+	// Parse the expiration timestamp
+	expStr := token[expStart:expEnd]
+	expTimestamp, err := parseInt64(expStr)
+	if err != nil {
+		return false
+	}
+
+	// Check if token is expired
+	currentTime := time.Now().Unix()
+	if currentTime > expTimestamp {
+		return false
+	}
+
+	return true
+}
+
+// ParseCopilotToken parses a Copilot token into its components
+func ParseCopilotToken(token string) (map[string]string, error) {
+	result := make(map[string]string)
+
+	// Split by semicolons
+	parts := strings.Split(token, ";")
+	for _, part := range parts {
+		// Skip empty parts
+		if part == "" {
+			continue
+		}
+
+		// Split by equals sign
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) != 2 {
+			return nil, fmt.Errorf("invalid token part: %s", part)
+		}
+
+		// Add to result map
+		result[kv[0]] = kv[1]
+	}
+
+	// Validate required parts
+	if _, ok := result["tid"]; !ok {
+		return nil, fmt.Errorf("missing tid in token")
+	}
+
+	return result, nil
+}
+
+// parseInt64 converts a string to int64, with proper error handling
+func parseInt64(s string) (int64, error) {
+	return strconv.ParseInt(s, 10, 64)
 }

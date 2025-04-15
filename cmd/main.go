@@ -263,7 +263,7 @@ func main() {
 		if apiKeyArg == "" {
 			log.Println("No API key provided as argument, trying to retrieve automatically...")
 			var err error
-			apiKeyArg, err = a.GetCopilotApiKey()
+			apiKeyArg, err = a.GetCopilotAPIKey()
 			if err != nil {
 				log.Fatalf("Failed to automatically retrieve API key: %v", err)
 			}
@@ -328,7 +328,7 @@ func main() {
 
 	// Initialize Copilot API key using our prioritized approach
 	log.Println("Initializing GitHub Copilot API key...")
-	copilotKey, err := a.GetCopilotApiKey()
+	copilotKey, err := a.GetCopilotAPIKey()
 	if err != nil {
 		log.Printf("Warning: %v", err)
 		log.Println("Continuing without Copilot API key. Will attempt to retrieve one when needed.")

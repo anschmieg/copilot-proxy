@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"math/rand"
 	"net/http"
 	"strings"
 	"sync"
@@ -57,6 +57,11 @@ func NewService() *Service {
 		userUsage:   make(map[uint64]models.ModelUsage),
 		activeUsers: make(map[string]models.ActiveUserCount),
 	}
+}
+
+// GetConfig returns the service's configuration
+func (s *Service) GetConfig() *Config {
+	return s.config
 }
 
 // CompletionRequest contains the data needed for a completion request
@@ -218,6 +223,7 @@ func normalizeModelName(provider models.LanguageModelProvider, name string) stri
 // chat completion API, with a model name and an array of messages.
 //
 // Authorization is done using a "Bearer" token format with the Copilot API key.
+// Required headers are included based on GitHub Copilot's expectations.
 func (s *Service) callCopilotAPI(providerRequest string) (*http.Response, error) {
 	apiKey := s.config.CopilotAPIKey
 	if apiKey == "" {
@@ -229,7 +235,90 @@ func (s *Service) callCopilotAPI(providerRequest string) (*http.Response, error)
 		return nil, err
 	}
 
-	return utils.CallAPIWithBody(CopilotChatCompletionURL, "application/json", apiKey, requestData)
+	// Set default values if not specified
+	if _, ok := requestData["model"]; !ok {
+		requestData["model"] = "gpt-4o"
+	}
+
+	if _, ok := requestData["temperature"]; !ok {
+		requestData["temperature"] = 0
+	}
+
+	if _, ok := requestData["top_p"]; !ok {
+		requestData["top_p"] = 1
+	}
+
+	if _, ok := requestData["max_tokens"]; !ok {
+		requestData["max_tokens"] = 4096
+	}
+
+	// Serialize the request body
+	body, err := json.Marshal(requestData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Create HTTP request
+	req, err := http.NewRequest("POST", CopilotChatCompletionURL, bytes.NewBuffer(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set required headers
+	req.Header.Set("Content-Type", "application/json")
+
+	// Set Authorization header - Always include the "Bearer " prefix
+	// The Copilot API expects the "Bearer " prefix regardless of token format
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	// Editor and plugin version
+	editorVersion := s.config.EditorVersion
+	if editorVersion == "" {
+		editorVersion = "vscode/1.99.2" // Default value
+	}
+
+	pluginVersion := s.config.EditorPluginVersion
+	if pluginVersion == "" {
+		pluginVersion = "copilot-chat/0.26.3" // Default value
+	}
+
+	integrationID := "vscode-chat"
+	userAgent := "GitHubCopilotChat/" + strings.TrimPrefix(pluginVersion, "copilot-chat/")
+
+	// Set all required headers based on mitmproxy logs
+	req.Header.Set("Editor-Version", editorVersion)
+	req.Header.Set("Editor-Plugin-Version", pluginVersion)
+	req.Header.Set("Copilot-Integration-ID", integrationID)
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("OpenAI-Intent", "conversation-agent")
+	req.Header.Set("X-GitHub-API-Version", "2025-04-01")
+	req.Header.Set("X-Initiator", "user")
+	req.Header.Set("X-Interaction-Type", "conversation-agent")
+
+	// Generate unique request ID
+	requestID := generateRequestID()
+	req.Header.Set("X-Request-ID", requestID)
+
+	// If provided, set VS Code specific headers
+	if s.config.VSCodeMachineID != "" {
+		req.Header.Set("Vscode-Machineid", s.config.VSCodeMachineID)
+	}
+
+	if s.config.VSCodeSessionID != "" {
+		req.Header.Set("Vscode-Sessionid", s.config.VSCodeSessionID)
+	}
+
+	return s.httpClient.Do(req)
+}
+
+// generateRequestID creates a unique request ID for Copilot API calls
+func generateRequestID() string {
+	return fmt.Sprintf("%x-%x-%x-%x-%x",
+		time.Now().Unix(),
+		rand.Intn(0x10000),
+		rand.Intn(0x10000),
+		rand.Intn(0x10000),
+		rand.Intn(0x1000000))
 }
 
 // callOpenAIAPI calls the OpenAI API
@@ -334,6 +423,76 @@ func (s *Service) callGoogleAIAPI(providerRequest string) (*http.Response, error
 	return s.httpClient.Do(req)
 }
 
+// SubmitTestPrompt sends a test prompt to the GitHub Copilot API and returns the response.
+// This is a simplified method used by the apitest tool to test the API integration.
+func (s *Service) SubmitTestPrompt(prompt string) (string, error) {
+	// Create a simple chat completion request
+	requestData := map[string]interface{}{
+		"model": "gpt-4o",
+		"messages": []map[string]string{
+			{
+				"role":    "user",
+				"content": prompt,
+			},
+		},
+		"temperature": 0.5,
+		"max_tokens":  1000,
+	}
+
+	// Marshal the request to JSON
+	providerRequest, err := json.Marshal(requestData)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Call the Copilot API
+	resp, err := s.callCopilotAPI(string(providerRequest))
+	if err != nil {
+		return "", fmt.Errorf("API call failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// If response status is not successful, return the error
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("API returned error: %s - %s", resp.Status, string(body))
+	}
+
+	// Parse the JSON response
+	var responseData map[string]interface{}
+	if err := json.Unmarshal(body, &responseData); err != nil {
+		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	// Extract the assistant's message content
+	choices, ok := responseData["choices"].([]interface{})
+	if !ok || len(choices) == 0 {
+		return "", fmt.Errorf("no choices in response")
+	}
+
+	choice, ok := choices[0].(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("invalid choice format")
+	}
+
+	message, ok := choice["message"].(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("invalid message format")
+	}
+
+	content, ok := message["content"].(string)
+	if !ok {
+		return "", fmt.Errorf("invalid content format")
+	}
+
+	return content, nil
+}
+
 // ProcessStreamingResponse processes a streaming response from any provider
 func (s *Service) ProcessStreamingResponse(resp *http.Response, userID uint64, provider models.LanguageModelProvider, model string) (io.ReadCloser, error) {
 	if resp.StatusCode != http.StatusOK {
@@ -346,38 +505,4 @@ func (s *Service) ProcessStreamingResponse(resp *http.Response, userID uint64, p
 	// For simplicity, we'll just return the response body as-is
 
 	return resp.Body, nil
-}
-
-// SubmitTestPrompt sends a test prompt to the Copilot API and returns the response.
-func (s *Service) SubmitTestPrompt(prompt string) (string, error) {
-	log.Println("Preparing test prompt request...")
-
-	// Construct the provider request payload
-	requestPayload := map[string]interface{}{
-		"model": "copilot-chat",
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-	}
-
-	// Serialize the payload to JSON
-	requestBody, err := json.Marshal(requestPayload)
-	if err != nil {
-		return "", fmt.Errorf("failed to serialize request payload: %w", err)
-	}
-
-	// Call the Copilot API
-	response, err := s.callCopilotAPI(string(requestBody))
-	if err != nil {
-		return "", fmt.Errorf("failed to call Copilot API: %w", err)
-	}
-	defer response.Body.Close()
-
-	// Read and return the response body
-	responseBody, err := io.ReadAll(response.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	return string(responseBody), nil
 }

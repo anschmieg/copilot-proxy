@@ -1,72 +1,90 @@
 // Package main provides a client for GitHub Copilot and other LLM services.
 //
-// This application serves as a proxy between users and various language model
-// providers, handling authentication, authorization, rate limiting, and other
-// access control features.
+// # GitHub Copilot API Integration
 //
-// Main components:
-//   - LLM authorization and access control
-//   - Token and request validation
-//   - Provider-specific API integrations
-//   - Automatic .env file loading
+// This application enables interaction with the GitHub Copilot API through several
+// authentication methods and provides proper request formatting to successfully
+// communicate with the Copilot service.
 //
-// Authentication:
+// # API Endpoints
 //
-// The application provides a flexible, prioritized authentication system for GitHub Copilot:
+// The GitHub Copilot API exposes several endpoints:
+//
+//   - Chat Completions: https://api.githubcopilot.com/chat/completions
+//     The main endpoint for chat and code completions
+//
+//   - Token Exchange: https://api.github.com/copilot_internal/v2/token
+//     Used to exchange a GitHub OAuth token for a Copilot API token
+//
+// # Authentication
+//
+// The application supports a prioritized authentication system:
 //
 //  1. Direct API Key: Use COPILOT_API_KEY environment variable
 //  2. OAuth Token: Use COPILOT_OAUTH_TOKEN or OAUTH_TOKEN environment variables
 //  3. Local Config: Automatically read from GitHub Copilot local configuration
 //
-// The system will try these methods in order when authenticating with GitHub Copilot.
-// It also checks for token expiration and automatically attempts to refresh expired tokens.
+// # Copilot API Token Format
 //
-// Environment Files:
+// The Copilot API token format is:
+// tid=token_id;exp=expiration_timestamp;sku=subscription_type;proxy-ep=endpoint;st=status;
+// followed by various feature flags like chat=1;cit=1;etc.
 //
-// The application automatically loads environment variables from .env files in:
-//   - The current directory
-//   - Parent directories (searching up to the root)
+// # Required Headers
 //
-// This allows for easy configuration without manual environment variable management.
+// The GitHub Copilot API requires specific headers to function properly:
 //
-// CLI Usage:
+//   - Authorization: Bearer {COPILOT_API_TOKEN}
+//   - Content-Type: application/json
+//   - Editor-Version: Editor identifier (e.g., "vscode/1.99.2")
+//   - Editor-Plugin-Version: Plugin version (e.g., "copilot-chat/0.26.3")
+//   - Copilot-Integration-ID: Integration identifier (e.g., "vscode-chat")
+//   - User-Agent: Client identifier (e.g., "GitHubCopilotChat/0.26.3")
+//   - OpenAI-Intent: Purpose of the request (e.g., "conversation-agent")
+//   - X-GitHub-API-Version: API version (e.g., "2025-04-01")
 //
-// The application supports the following CLI flags for granular control:
+// # Request Format
 //
-//   - Retrieve an API key using an OAuth token:
-//     ./coproxy --get-api-key="your-oauth-token"
-//     ./coproxy --get-api-key   (auto-retrieves token from environment)
+// The chat completions API expects a JSON request body with:
 //
-//   - Test the validity of an API key:
-//     ./coproxy --test-auth="your-api-key"
-//     ./coproxy --test-auth     (auto-retrieves key using prioritized approach)
+//   - messages: Array of message objects with role and content
+//   - model: The model to use (e.g., "gpt-4o")
+//   - temperature: Controls randomness (0.0-1.0)
+//   - top_p: Controls diversity via nucleus sampling
+//   - max_tokens: Maximum tokens to generate
+//   - tools: Optional array of tools the model can use
+//   - stream: Boolean for streaming responses
 //
-//   - Make a test call to verify the API is working:
-//     ./coproxy --test-call="test-payload"
+// Example request body:
 //
-//   - Disable API key validation (useful for development):
-//     ./coproxy --disable-auth
+//	{
+//	  "messages": [
+//	    {"role": "system", "content": "You are a helpful assistant."},
+//	    {"role": "user", "content": "Write a Go function to reverse a string."}
+//	  ],
+//	  "model": "gpt-4o",
+//	  "temperature": 0,
+//	  "top_p": 1,
+//	  "max_tokens": 4096
+//	}
 //
-// Environment Variables:
+// # Rate Limits
 //
-//   - VALID_API_KEYS: Comma-separated list of valid API keys for the proxy
-//   - DISABLE_AUTH: Set to "true" or "1" to disable API key verification
+// GitHub Copilot implements rate limiting based on:
+//   - Requests per minute
+//   - Tokens per minute
+//   - Tokens per day
+//
+// The application implements token bucket algorithm for rate limiting to manage usage.
+//
+// # Environment Variables
+//
 //   - COPILOT_API_KEY: GitHub Copilot API token
-//   - COPILOT_OAUTH_TOKEN: GitHub OAuth token to exchange for Copilot API key
+//   - COPILOT_OAUTH_TOKEN: GitHub OAuth token to exchange for a Copilot API key
 //   - OAUTH_TOKEN: Alternative to COPILOT_OAUTH_TOKEN
 //   - GITHUB_ACCESS_TOKEN: GitHub API token for additional functionality
-//   - LLM_API_SECRET: Secret key for LLM API access
-//   - STRIPE_API_KEY: Stripe API key for billing functionality
+//   - EDITOR_VERSION: Editor identifier for API requests (e.g., "vscode/1.99.2")
+//   - EDITOR_PLUGIN_VERSION: Plugin version for API requests (e.g., "copilot-chat/0.26.3")
 //
-// Configuration Paths:
-//
-// The application looks for GitHub Copilot configuration in various standard locations:
-//   - Windows: %APPDATA%\GitHub Copilot\apps.json
-//   - macOS:
-//   - ~/.config/github-copilot/apps.json
-//   - ~/Library/Application Support/GitHub Copilot/apps.json
-//   - ~/.vscode/extensions/github.copilot-*/config/apps.json
-//   - Linux:
-//   - ~/.config/github-copilot/apps.json
-//   - ~/.vscode/extensions/github.copilot-*/config/apps.json
+// For more details, run the application with the --help flag or refer to the README.md.
 package main

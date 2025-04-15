@@ -4,6 +4,7 @@ package llm
 import (
 	"copilot-proxy/pkg/models"
 	"copilot-proxy/pkg/utils"
+	"fmt"
 	"os"
 	"sync"
 )
@@ -22,6 +23,14 @@ type Config struct {
 	AnthropicStaffAPIKey string
 	// GoogleAIAPIKey is the API key for accessing Google AI models
 	GoogleAIAPIKey string
+	// EditorVersion identifies the editor (e.g., "vscode/1.99.2")
+	EditorVersion string
+	// EditorPluginVersion identifies the plugin version (e.g., "copilot-chat/0.26.3")
+	EditorPluginVersion string
+	// VSCodeMachineID is the unique identifier for the VS Code instance
+	VSCodeMachineID string
+	// VSCodeSessionID is the session identifier for the VS Code instance
+	VSCodeSessionID string
 	// EnabledProviders is the list of currently enabled LLM providers
 	EnabledProviders []models.LanguageModelProvider
 	// ClosedBetaModelName is the name of a model that's in closed beta (if any)
@@ -46,6 +55,7 @@ var (
 // It attempts to load the Copilot API key from the following sources in order:
 // 1. COPILOT_API_KEY environment variable
 // 2. Local GitHub Copilot configuration file (~/.config/github-copilot/apps.json)
+// 3. Using OAuth token from environment variables via the app.GetCopilotAPIKey() method
 //
 // Returns a pointer to the configuration structure.
 func GetConfig() *Config {
@@ -56,6 +66,19 @@ func GetConfig() *Config {
 			if token, err := utils.GetCopilotToken(); err == nil {
 				copilotAPIKey = token
 			}
+
+			// If still no API key, try to use the app's GetCopilotAPIKey method
+			if copilotAPIKey == "" {
+				// Import the app package dynamically to avoid import cycle
+				appInstance := createAppInstance()
+				if appInstance != nil {
+					if key, err := getCopilotAPIKeyFromApp(appInstance); err == nil {
+						copilotAPIKey = key
+						// Cache it for future use
+						os.Setenv("COPILOT_API_KEY", copilotAPIKey)
+					}
+				}
+			}
 		}
 
 		config = &Config{
@@ -64,12 +87,52 @@ func GetConfig() *Config {
 			AnthropicAPIKey:          os.Getenv("ANTHROPIC_API_KEY"),
 			AnthropicStaffAPIKey:     os.Getenv("ANTHROPIC_STAFF_API_KEY"),
 			GoogleAIAPIKey:           os.Getenv("GOOGLE_AI_API_KEY"),
+			EditorVersion:            os.Getenv("EDITOR_VERSION"),
+			EditorPluginVersion:      os.Getenv("EDITOR_PLUGIN_VERSION"),
+			VSCodeMachineID:          os.Getenv("VSCODE_MACHINE_ID"),
+			VSCodeSessionID:          os.Getenv("VSCODE_SESSION_ID"),
 			EnabledProviders:         defaultEnabledProviders(copilotAPIKey),
 			DefaultMaxMonthlySpend:   1000, // $10.00 in cents
 			FreeTierMonthlyAllowance: 1000, // $10.00 in cents
 		}
 	})
 	return config
+}
+
+// createAppInstance creates a new instance of the app.App type using reflection
+// to avoid import cycles.
+func createAppInstance() interface{} {
+	appPkg, err := utils.DynamicImport("copilot-proxy/internal/app")
+	if err != nil {
+		return nil
+	}
+
+	newAppFunc := appPkg.Lookup("NewApp")
+	if newAppFunc == nil {
+		return nil
+	}
+
+	return newAppFunc.Call(nil)[0].Interface()
+}
+
+// getCopilotAPIKeyFromApp calls the GetCopilotAPIKey method on the app instance
+// using reflection to avoid import cycles.
+func getCopilotAPIKeyFromApp(appInstance interface{}) (string, error) {
+	method := utils.GetMethod(appInstance, "GetCopilotAPIKey")
+	if method == nil {
+		return "", fmt.Errorf("GetCopilotAPIKey method not found")
+	}
+
+	results := method.Call(nil)
+	if len(results) != 2 {
+		return "", fmt.Errorf("unexpected result count from GetCopilotAPIKey")
+	}
+
+	if !results[1].IsNil() {
+		return "", results[1].Interface().(error)
+	}
+
+	return results[0].String(), nil
 }
 
 // defaultEnabledProviders determines which LLM providers should be enabled
