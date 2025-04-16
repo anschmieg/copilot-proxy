@@ -39,23 +39,20 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"copilot-proxy/internal"
 	"copilot-proxy/internal/app"
 	"copilot-proxy/internal/auth"
 	"copilot-proxy/internal/llm"
-	"copilot-proxy/internal/rpc"
 	"copilot-proxy/pkg/utils"
+	"crypto/rand"
+	"encoding/base64"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -115,8 +112,8 @@ func testCopilotAPI() {
 	}
 	log.Printf("Successfully retrieved API key: %s", utils.MaskToken(apiKey))
 
-	// Step 3: Submit a test request to the Copilot API
-	log.Println("Submitting test request to Copilot API...")
+	// Step 3: Submit a test request to the Copilot API with streaming
+	log.Println("Submitting test request to Copilot API (streaming mode)...")
 
 	// Set the API key in the config environment variable so NewService() picks it up
 	os.Setenv("COPILOT_API_KEY", apiKey)
@@ -124,86 +121,10 @@ func testCopilotAPI() {
 	// Create a new LLM service that will use the API key from environment
 	llmService := llm.NewService()
 
-	response, err := llmService.SubmitTestPrompt("Write a Go function to reverse a string")
+	// Use the streaming version instead of the non-streaming one
+	err = llmService.SubmitStreamingTestPrompt("Write a Go function to reverse a string")
 	if err != nil {
-		log.Fatalf("Failed to submit test request: %v", err)
-	}
-	log.Println("Successfully received response from Copilot API")
-
-	// Step 4: Return the response to the user
-	fmt.Println("\nResponse from Copilot API:")
-	fmt.Println(response)
-}
-
-func monitorVSCodeRequests() {
-	log.Println("Setting up a proxy to monitor VS Code requests to Copilot API...")
-
-	// Define the proxy server
-	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Only log requests to Copilot endpoints
-		if strings.Contains(r.Host, "githubcopilot.com") ||
-			strings.Contains(r.Host, "api.github.com") && strings.Contains(r.URL.Path, "copilot") {
-
-			// Log the request details
-			log.Printf("==== VS Code Copilot Request ====")
-			log.Printf("URL: %s %s", r.Method, r.URL)
-
-			// Log all headers
-			log.Printf("Headers:")
-			for key, values := range r.Header {
-				for _, value := range values {
-					log.Printf("  %s: %s", key, value)
-				}
-			}
-
-			// Log body if it exists
-			if r.Body != nil {
-				bodyBytes, err := io.ReadAll(r.Body)
-				if err != nil {
-					log.Printf("Error reading body: %v", err)
-				} else {
-					r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-					log.Printf("Body: %s", string(bodyBytes))
-				}
-			}
-
-			log.Printf("=================================")
-		}
-
-		// Forward the request to the original destination
-		client := &http.Client{}
-		resp, err := client.Do(r)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-		defer resp.Body.Close()
-
-		// Copy response headers
-		for key, values := range resp.Header {
-			for _, value := range values {
-				w.Header().Add(key, value)
-			}
-		}
-
-		// Copy response status code
-		w.WriteHeader(resp.StatusCode)
-
-		// Copy response body
-		io.Copy(w, resp.Body)
-	})
-
-	// Start the proxy server
-	log.Println("Starting proxy server on port 9999...")
-	log.Println("To use this proxy with VS Code:")
-	log.Println("1. Open VS Code settings (Ctrl+,)")
-	log.Println("2. Search for 'proxy'")
-	log.Println("3. Set 'Http: Proxy' to 'http://localhost:9999'")
-	log.Println("4. Restart VS Code")
-	log.Println("Press Ctrl+C to stop the proxy server")
-
-	if err := http.ListenAndServe(":9999", proxy); err != nil {
-		log.Fatalf("Failed to start proxy server: %v", err)
+		log.Fatalf("Failed to submit streaming test request: %v", err)
 	}
 }
 
@@ -320,12 +241,6 @@ func main() {
 		cancel()
 	}()
 
-	// Initialize connection pool for RPC
-	_ = rpc.NewConnectionPool() // Discard the unused connection pool
-
-	// Initialize the authentication service
-	_ = auth.NewService()
-
 	// Initialize Copilot API key using our prioritized approach
 	log.Println("Initializing GitHub Copilot API key...")
 	copilotKey, err := a.GetCopilotAPIKey()
@@ -338,39 +253,24 @@ func main() {
 		os.Setenv("COPILOT_API_KEY", copilotKey)
 	}
 
-	// Initialize user backfiller if GitHub token is provided
-	githubToken := os.Getenv("GITHUB_ACCESS_TOKEN")
-	if githubToken != "" {
-		userBackfiller := internal.NewUserBackfiller(nil, githubToken) // Replace nil with actual DB interface
-		go userBackfiller.Start(ctx)
-	}
-
-	// Initialize Stripe billing if API key is provided
-	stripeKey := os.Getenv("STRIPE_API_KEY")
-	if stripeKey != "" {
-		stripeBilling, err := internal.NewStripeBilling(stripeKey)
-		if err != nil {
-			log.Printf("Failed to initialize Stripe billing: %v", err)
-		} else {
-			if err := stripeBilling.Initialize(); err != nil {
-				log.Printf("Failed to initialize Stripe meters and prices: %v", err)
-			}
-		}
-	}
-
 	// Initialize LLM server
 	llmSecret := os.Getenv("LLM_API_SECRET")
-	if llmSecret != "" {
-		llmState := llm.NewLLMServerState(llmSecret)
-		// Register LLM handlers
-		llmState.RegisterHandlers(a.Router)
-
-		// Log available LLM providers
-		config := llm.GetConfig()
-		for _, provider := range config.EnabledProviders {
-			log.Printf("Enabled LLM provider: %s", provider)
+	if llmSecret == "" {
+		// Generate a random secret for this server instance
+		// This is needed to register the handlers but won't be used for validation
+		// when --disable-auth is set
+		bytes := make([]byte, 32)
+		if _, err := rand.Read(bytes); err != nil {
+			log.Printf("Warning: Failed to generate random secret: %v", err)
+			llmSecret = "temporary-secret-" + time.Now().String()
+		} else {
+			llmSecret = base64.StdEncoding.EncodeToString(bytes)
 		}
+		log.Println("No LLM_API_SECRET set, using generated secret for this session")
 	}
+	llmState := llm.NewLLMServerState(llmSecret)
+	// Register LLM handlers unconditionally to ensure OpenAI-compatible endpoints are available
+	llmState.RegisterHandlers(a.Router)
 
 	// Authenticate and retrieve API key using OAuth token
 	oauthToken := os.Getenv("OAUTH_TOKEN")
@@ -395,9 +295,6 @@ func main() {
 			log.Fatalf("Could not start server: %v", err)
 		}
 	}()
-
-	// Start the proxy server to monitor VS Code requests
-	go monitorVSCodeRequests()
 
 	// Wait for shutdown signal
 	<-ctx.Done()

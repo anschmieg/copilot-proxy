@@ -7,6 +7,15 @@ import (
 	"net/http"
 )
 
+// Authorization errors
+var (
+	ErrNoCountryCode     = errors.New("no country code provided")
+	ErrTorNetwork        = errors.New("access via TOR network is not allowed")
+	ErrRestrictedRegion  = errors.New("access from this region is restricted")
+	ErrModelNotAvailable = errors.New("this model is not available in your plan")
+	ErrRateLimitExceeded = errors.New("rate limit exceeded")
+)
+
 // Restricted countries based on export regulations
 var (
 	restrictedCountries = map[string]bool{
@@ -35,42 +44,10 @@ var (
 	torNetwork = "T1"
 )
 
-// Authorization errors
-var (
-	ErrNoCountryCode        = errors.New("no country code provided")
-	ErrTorNetwork           = errors.New("access via TOR network is not allowed")
-	ErrRestrictedRegion     = errors.New("access from this region is restricted")
-	ErrModelNotAvailable    = errors.New("this model is not available in your plan")
-	ErrRateLimitExceeded    = errors.New("rate limit exceeded")
-	ErrSpendingLimitReached = errors.New("monthly spending limit reached")
-)
-
 // AuthorizeAccessToModel checks if a user can access a specific model
 func AuthorizeAccessToModel(token *models.LLMToken, provider models.LanguageModelProvider, modelName string) error {
-	// Staff can access all models
-	if token.IsStaff {
-		return nil
-	}
-
-	// Copilot models are available to all users with valid tokens
-	if provider == models.ProviderCopilot {
-		return nil
-	}
-
-	// Claude 3.5 sonnet is available to all plans
-	if provider == models.ProviderAnthropic &&
-		(modelName == "claude-3-5-sonnet" || modelName == "claude-3-7-sonnet") {
-		return nil
-	}
-
-	// Other models require specific access
-	config := GetConfig()
-	if config.ClosedBetaModelName == modelName {
-		// Logic for beta access would go here
-		return nil
-	}
-
-	return ErrModelNotAvailable
+	// For personal use, everyone has access to all models
+	return nil
 }
 
 // AuthorizeAccessForCountry checks if a model can be accessed from the user's country
@@ -82,29 +59,27 @@ func AuthorizeAccessForCountry(countryCode *string, provider models.LanguageMode
 
 	// Block TOR network
 	if *countryCode == torNetwork {
-		return fmt.Errorf("%w: access to %s models is not available over TOR",
-			ErrTorNetwork, provider)
+		return fmt.Errorf("%w: access to Copilot models is not available over TOR",
+			ErrTorNetwork)
 	}
 
 	// Check country restrictions
 	if restrictedCountries[*countryCode] {
-		return fmt.Errorf("%w: access to %s models is not available in your region (%s)",
-			ErrRestrictedRegion, provider, *countryCode)
+		return fmt.Errorf("%w: access to Copilot models is not available in your region (%s)",
+			ErrRestrictedRegion, *countryCode)
 	}
 
 	return nil
 }
 
 // CheckRateLimit verifies the user hasn't exceeded their rate limits
-func CheckRateLimit(userID uint64, provider models.LanguageModelProvider, modelName string,
-	usage models.ModelUsage, activeUsers models.ActiveUserCount) error {
-
+func CheckRateLimit(modelName string, usage models.ModelUsage) error {
 	availableModels := DefaultModels()
 	var model *models.LanguageModel
 
 	// Find the model configuration
 	for _, m := range availableModels {
-		if m.Provider == provider && m.Name == modelName {
+		if m.Name == modelName {
 			modelCopy := m // Create a copy to avoid potential issues
 			model = &modelCopy
 			break
@@ -112,74 +87,29 @@ func CheckRateLimit(userID uint64, provider models.LanguageModelProvider, modelN
 	}
 
 	if model == nil {
-		return fmt.Errorf("unknown model: %s from provider %s", modelName, provider)
+		return fmt.Errorf("unknown model: %s", modelName)
 	}
 
-	// Scale limits based on active users
-	usersInRecentMinutes := activeUsers.UsersInRecentMinutes
-	if usersInRecentMinutes < 1 {
-		usersInRecentMinutes = 1
-	}
-
-	usersInRecentDays := activeUsers.UsersInRecentDays
-	if usersInRecentDays < 1 {
-		usersInRecentDays = 1
-	}
-
-	perUserMaxRequestsPerMinute := model.MaxRequestsPerMinute / usersInRecentMinutes
-	perUserMaxTokensPerMinute := model.MaxTokensPerMinute / usersInRecentMinutes
-	perUserMaxInputTokensPerMinute := model.MaxInputTokensPerMinute / usersInRecentMinutes
-	perUserMaxOutputTokensPerMinute := model.MaxOutputTokensPerMinute / usersInRecentMinutes
-	perUserMaxTokensPerDay := model.MaxTokensPerDay / usersInRecentDays
-
-	// Check if any limits are exceeded
-	if usage.RequestsThisMinute > perUserMaxRequestsPerMinute {
+	// Check if request limits are exceeded
+	if usage.RequestsThisMinute > model.MaxRequestsPerMinute {
 		return fmt.Errorf("%w: maximum requests_per_minute reached", ErrRateLimitExceeded)
 	}
 
-	if usage.TokensThisMinute > perUserMaxTokensPerMinute {
+	// Check if token limits are exceeded
+	if usage.TokensThisMinute > model.MaxTokensPerMinute {
 		return fmt.Errorf("%w: maximum tokens_per_minute reached", ErrRateLimitExceeded)
 	}
 
-	if usage.InputTokensThisMinute > perUserMaxInputTokensPerMinute {
+	if usage.InputTokensThisMinute > model.MaxInputTokensPerMinute {
 		return fmt.Errorf("%w: maximum input_tokens_per_minute reached", ErrRateLimitExceeded)
 	}
 
-	if usage.OutputTokensThisMinute > perUserMaxOutputTokensPerMinute {
+	if usage.OutputTokensThisMinute > model.MaxOutputTokensPerMinute {
 		return fmt.Errorf("%w: maximum output_tokens_per_minute reached", ErrRateLimitExceeded)
 	}
 
-	if usage.TokensThisDay > perUserMaxTokensPerDay {
+	if usage.TokensThisDay > model.MaxTokensPerDay {
 		return fmt.Errorf("%w: maximum tokens_per_day reached", ErrRateLimitExceeded)
-	}
-
-	return nil
-}
-
-// CheckSpendingLimit verifies if the user is within their spending limits
-func CheckSpendingLimit(token *models.LLMToken, currentSpending uint32) error {
-	// Staff bypass spending limits
-	if token.IsStaff {
-		return nil
-	}
-
-	config := GetConfig()
-	freeTier := token.CustomMonthlyAllowanceInCents
-	if freeTier == nil {
-		defaultFreeTier := config.FreeTierMonthlyAllowance
-		freeTier = &defaultFreeTier
-	}
-
-	if currentSpending >= *freeTier {
-		if !token.HasLLMSubscription {
-			return ErrSpendingLimitReached
-		}
-
-		// For subscribers, check against their max monthly spend
-		monthlySpend := currentSpending - *freeTier
-		if monthlySpend >= token.MaxMonthlySpendInCents {
-			return ErrSpendingLimitReached
-		}
 	}
 
 	return nil
@@ -187,38 +117,13 @@ func CheckSpendingLimit(token *models.LLMToken, currentSpending uint32) error {
 
 // SetErrorResponseHeaders sets the appropriate headers for error responses
 func SetErrorResponseHeaders(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, ErrSpendingLimitReached):
-		w.Header().Set("X-LLM-Monthly-Spend-Reached", "true")
-	case errors.Is(err, ErrRateLimitExceeded):
+	if errors.Is(err, ErrRateLimitExceeded) {
 		w.Header().Set("Retry-After", "60")
 	}
 }
 
-// ValidateAccess performs all authorization checks for an LLM request
-func ValidateAccess(token *models.LLMToken, countryCode *string, provider models.LanguageModelProvider,
-	modelName string, usage models.ModelUsage, activeUsers models.ActiveUserCount,
-	currentSpending uint32) error {
-
-	// Check country restrictions
-	if err := AuthorizeAccessForCountry(countryCode, provider); err != nil {
-		return err
-	}
-
-	// Check if model is available to user's plan
-	if err := AuthorizeAccessToModel(token, provider, modelName); err != nil {
-		return err
-	}
-
-	// Check spending limits
-	if err := CheckSpendingLimit(token, currentSpending); err != nil {
-		return err
-	}
-
-	// Check rate limits
-	if err := CheckRateLimit(token.UserID, provider, modelName, usage, activeUsers); err != nil {
-		return err
-	}
-
-	return nil
+// ValidateAccess performs simplified authorization checks for personal use
+func ValidateAccess(token *models.LLMToken, modelName string, usage models.ModelUsage) error {
+	// Just check rate limits for personal use
+	return CheckRateLimit(modelName, usage)
 }

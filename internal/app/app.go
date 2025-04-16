@@ -34,7 +34,7 @@ func (a *App) initializeRoutes() {
 	a.Router.HandleFunc("/status", a.handleStatus)
 	a.Router.HandleFunc("/authenticate", a.handleAuthenticate)
 	a.Router.HandleFunc("/stream", a.handleStream)
-	a.Router.HandleFunc("/openai", a.handleOpenAI)
+	a.Router.HandleFunc("/copilot", a.handleCopilot)
 }
 
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +71,7 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *App) handleOpenAI(w http.ResponseWriter, r *http.Request) {
+func (a *App) handleCopilot(w http.ResponseWriter, r *http.Request) {
 	// Extract API key from the Authorization header
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
@@ -109,45 +109,23 @@ func (a *App) handleOpenAI(w http.ResponseWriter, r *http.Request) {
 	if _, ok := payload["messages"]; ok {
 		// If payload contains messages directly, wrap it in a provider_request
 		providerRequest = map[string]interface{}{
-			"provider":         payload["provider"],
 			"model":            payload["model"],
 			"provider_request": payload,
 		}
 	}
 
-	// Get provider from the payload
-	provider, ok := providerRequest["provider"].(string)
-	if !ok {
-		http.Error(w, "Missing provider in request", http.StatusBadRequest)
+	// Get a valid Copilot API key using our prioritized logic
+	copilotKey, err := a.GetCopilotAPIKey()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// If this is a Copilot request, we need to use the Copilot API key
-	if provider == "copilot" {
-		// Get a valid Copilot API key using our prioritized logic
-		copilotKey, err := a.GetCopilotAPIKey()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+	// For debugging
+	fmt.Printf("Using Copilot API key: %s\n", copilotKey)
 
-		// For debugging
-		fmt.Printf("Using Copilot API key: %s\n", copilotKey)
-
-		// Override the API key with the Copilot key for this request
-		response, err := utils.CallOpenAIEndpoint(copilotKey, providerRequest)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
-		return
-	}
-
-	// For non-Copilot requests, use the provided API key (which may point to other services)
-	response, err := utils.CallOpenAIEndpoint(apiKey, providerRequest)
+	// Make the request to the Copilot API
+	response, err := utils.CallCopilotAPI(copilotKey, providerRequest)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

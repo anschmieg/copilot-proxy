@@ -1,4 +1,4 @@
-// Package llm implements language model integration for various AI providers.
+// Package llm implements language model integration for GitHub Copilot.
 package llm
 
 import (
@@ -9,20 +9,11 @@ import (
 	"sync"
 )
 
-// Config contains configuration for the LLM service including API keys,
-// enabled providers, and spending limits. This centralizes all configuration
-// related to language model providers.
+// Config contains configuration for the Copilot LLM service including API keys.
+// This centralizes all configuration related to GitHub Copilot.
 type Config struct {
-	// OpenAIAPIKey is the API key for accessing OpenAI services
-	OpenAIAPIKey string
 	// CopilotAPIKey is the API key for accessing GitHub Copilot Chat
 	CopilotAPIKey string
-	// AnthropicAPIKey is the API key for accessing Anthropic models
-	AnthropicAPIKey string
-	// AnthropicStaffAPIKey is a special API key for staff access to Anthropic models
-	AnthropicStaffAPIKey string
-	// GoogleAIAPIKey is the API key for accessing Google AI models
-	GoogleAIAPIKey string
 	// EditorVersion identifies the editor (e.g., "vscode/1.99.2")
 	EditorVersion string
 	// EditorPluginVersion identifies the plugin version (e.g., "copilot-chat/0.26.3")
@@ -31,10 +22,6 @@ type Config struct {
 	VSCodeMachineID string
 	// VSCodeSessionID is the session identifier for the VS Code instance
 	VSCodeSessionID string
-	// EnabledProviders is the list of currently enabled LLM providers
-	EnabledProviders []models.LanguageModelProvider
-	// ClosedBetaModelName is the name of a model that's in closed beta (if any)
-	ClosedBetaModelName string
 	// DefaultMaxMonthlySpend is the default spending limit in cents per month
 	DefaultMaxMonthlySpend uint32
 	// FreeTierMonthlyAllowance is the free usage allowance in cents per month
@@ -82,16 +69,11 @@ func GetConfig() *Config {
 		}
 
 		config = &Config{
-			OpenAIAPIKey:             os.Getenv("OPENAI_API_KEY"),
 			CopilotAPIKey:            copilotAPIKey,
-			AnthropicAPIKey:          os.Getenv("ANTHROPIC_API_KEY"),
-			AnthropicStaffAPIKey:     os.Getenv("ANTHROPIC_STAFF_API_KEY"),
-			GoogleAIAPIKey:           os.Getenv("GOOGLE_AI_API_KEY"),
 			EditorVersion:            os.Getenv("EDITOR_VERSION"),
 			EditorPluginVersion:      os.Getenv("EDITOR_PLUGIN_VERSION"),
 			VSCodeMachineID:          os.Getenv("VSCODE_MACHINE_ID"),
 			VSCodeSessionID:          os.Getenv("VSCODE_SESSION_ID"),
-			EnabledProviders:         defaultEnabledProviders(copilotAPIKey),
 			DefaultMaxMonthlySpend:   1000, // $10.00 in cents
 			FreeTierMonthlyAllowance: 1000, // $10.00 in cents
 		}
@@ -135,41 +117,10 @@ func getCopilotAPIKeyFromApp(appInstance interface{}) (string, error) {
 	return results[0].String(), nil
 }
 
-// defaultEnabledProviders determines which LLM providers should be enabled
-// based on available API keys. A provider is only enabled if its API key is available.
+// DefaultModels returns the default models for Copilot with their
+// configuration settings including rate limits.
 //
-// This prevents configuration errors where the system might try to use a provider
-// without proper authentication.
-//
-// Parameters:
-//   - copilotAPIKey: The GitHub Copilot API key (passed separately as it might be
-//     retrieved from local config rather than environment)
-//
-// Returns a slice of enabled LanguageModelProvider values.
-func defaultEnabledProviders(copilotAPIKey string) []models.LanguageModelProvider {
-	providers := []models.LanguageModelProvider{}
-
-	if copilotAPIKey != "" {
-		providers = append(providers, models.ProviderCopilot)
-	}
-	if os.Getenv("OPENAI_API_KEY") != "" {
-		providers = append(providers, models.ProviderOpenAI)
-	}
-	if os.Getenv("ANTHROPIC_API_KEY") != "" {
-		providers = append(providers, models.ProviderAnthropic)
-	}
-	if os.Getenv("GOOGLE_AI_API_KEY") != "" {
-		providers = append(providers, models.ProviderGoogle)
-	}
-
-	return providers
-}
-
-// DefaultModels returns the default models for each provider with their
-// configuration settings including rate limits. This defines all the language
-// models available in the system along with their capabilities.
-//
-// Returns a slice of LanguageModel structures defining each model's properties.
+// Returns a slice of LanguageModel structures defining the Copilot model properties.
 func DefaultModels() []models.LanguageModel {
 	return []models.LanguageModel{
 		{
@@ -181,28 +132,6 @@ func DefaultModels() []models.LanguageModel {
 			MaxInputTokensPerMinute:  2500,
 			MaxOutputTokensPerMinute: 2500,
 			MaxTokensPerDay:          100000,
-			Enabled:                  true,
-		},
-		{
-			ID:                       "gpt-4",
-			Name:                     "gpt-4",
-			Provider:                 models.ProviderOpenAI,
-			MaxRequestsPerMinute:     20,
-			MaxTokensPerMinute:       4000,
-			MaxInputTokensPerMinute:  2000,
-			MaxOutputTokensPerMinute: 2000,
-			MaxTokensPerDay:          80000,
-			Enabled:                  true,
-		},
-		{
-			ID:                       "claude-3-opus",
-			Name:                     "claude-3-opus",
-			Provider:                 models.ProviderAnthropic,
-			MaxRequestsPerMinute:     15,
-			MaxTokensPerMinute:       3000,
-			MaxInputTokensPerMinute:  1500,
-			MaxOutputTokensPerMinute: 1500,
-			MaxTokensPerDay:          60000,
 			Enabled:                  true,
 		},
 	}

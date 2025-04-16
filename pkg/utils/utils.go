@@ -46,12 +46,12 @@ func GetEnvWithDefault(name, defaultValue string) string {
 	return value
 }
 
-// CallOpenAIEndpoint sends a request to the OpenAI endpoint and returns the response.
-// This function uses the GitHub Copilot endpoint but formats the request and response
-// in a way that's compatible with OpenAI's API structure.
+// CallCopilotAPI sends a request to the GitHub Copilot API and returns the response.
+// This function handles the specific requirements for calling the GitHub Copilot API,
+// including setting the necessary headers and formatting the request properly.
 //
 // Parameters:
-//   - apiKey: The API key to use for authentication
+//   - apiKey: The GitHub Copilot API key to use for authentication
 //   - payload: The request payload (must include "model" and "messages" fields)
 //
 // Returns a map containing the response data or an error if the request failed.
@@ -59,13 +59,13 @@ func GetEnvWithDefault(name, defaultValue string) string {
 // Example:
 //
 //	payload := map[string]interface{}{
-//	    "model": "copilot-chat",
+//	    "model": "gpt-4o",
 //	    "messages": []map[string]interface{}{
 //	        {"role": "user", "content": "Hello, how are you?"},
 //	    },
 //	}
-//	response, err := CallOpenAIEndpoint(apiKey, payload)
-func CallOpenAIEndpoint(apiKey string, payload map[string]interface{}) (map[string]interface{}, error) {
+//	response, err := CallCopilotAPI(apiKey, payload)
+func CallCopilotAPI(apiKey string, payload map[string]interface{}) (map[string]interface{}, error) {
 	// Extract provider_request if it exists
 	providerRequest, hasProviderRequest := payload["provider_request"].(map[string]interface{})
 	if hasProviderRequest {
@@ -80,13 +80,26 @@ func CallOpenAIEndpoint(apiKey string, payload map[string]interface{}) (map[stri
 		// Use the provider_request for the actual API call
 		payload = providerRequest
 	} else {
-		// Ensure payload adheres to OpenAI schema
+		// Ensure payload adheres to required schema
 		if _, ok := payload["model"]; !ok {
 			return nil, errors.New("payload must include 'model'")
 		}
 		if _, ok := payload["messages"]; !ok {
 			return nil, errors.New("payload must include 'messages'")
 		}
+	}
+
+	// Set default values if not specified
+	if _, ok := payload["temperature"]; !ok {
+		payload["temperature"] = 0
+	}
+
+	if _, ok := payload["top_p"]; !ok {
+		payload["top_p"] = 1
+	}
+
+	if _, ok := payload["max_tokens"]; !ok {
+		payload["max_tokens"] = 4096
 	}
 
 	body, err := json.Marshal(payload)
@@ -109,16 +122,11 @@ func CallOpenAIEndpoint(apiKey string, payload map[string]interface{}) (map[stri
 		return nil, err
 	}
 
-	// Set Authorization header
-	if strings.HasPrefix(apiKey, "tid=") {
-		// This is already a full GitHub Copilot token, use it directly
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	} else {
-		// For other API keys that might not have the Bearer prefix
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
+	// Set Authorization header - always include the "Bearer " prefix
+	// The Copilot API expects the "Bearer " prefix regardless of token format
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	// Required Copilot headers
+	// Set required Copilot headers
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Editor-Version", editorVersion)
 	req.Header.Set("Editor-Plugin-Version", editorPluginVersion)
@@ -147,7 +155,7 @@ func CallOpenAIEndpoint(apiKey string, payload map[string]interface{}) (map[stri
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to call OpenAI endpoint: %s - %s", resp.Status, string(bodyBytes))
+		return nil, fmt.Errorf("failed to call Copilot API: %s - %s", resp.Status, string(bodyBytes))
 	}
 
 	var response struct {
@@ -188,7 +196,7 @@ func CallOpenAIEndpoint(apiKey string, payload map[string]interface{}) (map[stri
 }
 
 // CallCopilotEndpoint sends a request to the GitHub Copilot endpoint using the locally stored token.
-// This is a convenience wrapper around CallOpenAIEndpoint that automatically fetches and uses
+// This is a convenience wrapper around CallCopilotAPI that automatically fetches and uses
 // the local Copilot token.
 //
 // Parameters:
@@ -201,7 +209,7 @@ func CallCopilotEndpoint(payload map[string]interface{}) (map[string]interface{}
 		return nil, errors.New("failed to get Copilot token: " + err.Error())
 	}
 
-	return CallOpenAIEndpoint(apiKey, payload)
+	return CallCopilotAPI(apiKey, payload)
 }
 
 // CallAPIWithBody makes an API call with a JSON body and returns the raw response.

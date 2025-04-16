@@ -49,6 +49,28 @@ The system supports multiple LLM providers:
 - Anthropic API (for Claude models)
 - Google AI API (for Gemini models)
 
+# GitHub Copilot Integration
+
+For GitHub Copilot requests, the service:
+
+1. Authenticates using one of three methods:
+  - Direct Copilot API key (from environment variables)
+  - GitHub OAuth token (exchanged for Copilot API key)
+  - Local configuration (from VS Code extensions)
+
+2. Formats requests to match Copilot API requirements with appropriate headers:
+  - X-GitHub-API-Version: 2025-04-01
+  - Editor-Version: vscode/1.99.2
+  - Editor-Plugin-Version: copilot-chat/0.26.3
+
+3. Handles token refreshing when the current token expires
+  - Automatically retries with a fresh token on 401 responses
+  - Maintains a token cache to minimize authentication overhead
+
+4. Supports streaming responses with Server-Sent Events format
+  - Converts between Copilot and OpenAI streaming formats
+  - Handles backpressure and connection management
+
 # Rate Limiting
 
 Rate limiting occurs at multiple levels:
@@ -73,5 +95,31 @@ The system supports different access levels:
 - Staff access with unrestricted usage
 
 Each level has configurable spending limits and model access permissions.
+
+# Error Handling
+
+The service implements robust error handling with:
+
+1. Detailed logging of API errors
+2. User-friendly error messages
+3. Automatic retries for transient failures
+4. Circuit breaking for persistent API issues
+5. Graceful degradation when specific providers are unavailable
+
+# Monitoring and Debugging
+
+The service provides various monitoring capabilities:
+
+1. Request/response logging (when enabled)
+2. VS Code extension monitoring via the `--monitor-vscode` flag
+3. Performance metrics collection
+4. Token usage tracking
+5. Error rate monitoring
+
+# Version Compatibility
+
+Current API version: 2025-04-01
+
+See CHANGELOG.md for version history and compatibility information.
 */
 package llm

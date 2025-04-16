@@ -108,6 +108,220 @@ curl http://localhost:8080/openai \
   }'
 ```
 
+## Code Examples
+
+### Basic OpenAI-Compatible Client
+
+```go
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
+	"net/http"
+)
+
+func main() {
+	// Define the request payload
+	payload := map[string]interface{}{
+		"provider": "copilot",
+		"model":    "copilot-chat",
+		"messages": []map[string]string{
+			{"role": "user", "content": "Write a Go function to parse JSON"},
+		},
+	}
+
+	// Convert payload to JSON
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+
+	// Create a new request
+	req, err := http.NewRequest("POST", "http://localhost:8080/openai", bytes.NewBuffer(jsonData))
+	if err != nil {
+		panic(err)
+	}
+
+	// Add headers
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer your-api-key")
+
+	// Send the request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+
+	// Read the response
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+
+	// Print the response
+	fmt.Println(string(body))
+}
+```
+
+### Streaming Response Example
+
+```go
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+)
+
+func main() {
+	// Define the request payload
+	payload := map[string]interface{}{
+		"provider": "copilot",
+		"model":    "copilot-chat",
+		"messages": []map[string]string{
+			{"role": "user", "content": "Write a Go function to read a file"},
+		},
+		"stream": true,
+	}
+
+	// Convert payload to JSON
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+
+	// Create a new request
+	req, err := http.NewRequest("POST", "http://localhost:8080/openai", bytes.NewBuffer(jsonData))
+	if err != nil {
+		panic(err)
+	}
+
+	// Add headers
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer your-api-key")
+
+	// Send the request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+
+	// Read the streaming response
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			panic(err)
+		}
+
+		// Skip empty lines
+		line = strings.TrimSpace(line)
+		if line == "" || line == "data: [DONE]" {
+			continue
+		}
+
+		// Remove "data: " prefix if present
+		if strings.HasPrefix(line, "data: ") {
+			line = line[6:]
+		}
+
+		// Parse JSON
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &data); err != nil {
+			fmt.Println("Error parsing JSON:", err)
+			continue
+		}
+
+		// Print the chunk
+		choices, ok := data["choices"].([]interface{})
+		if ok && len(choices) > 0 {
+			choice, ok := choices[0].(map[string]interface{})
+			if ok {
+				delta, ok := choice["delta"].(map[string]interface{})
+				if ok {
+					content, ok := delta["content"].(string)
+					if ok {
+						fmt.Print(content)
+					}
+				}
+			}
+		}
+	}
+}
+```
+
+### Custom Authentication Example
+
+```go
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+)
+
+// Returns the path to the Copilot configuration file based on the OS
+func getCopilotConfigPath() string {
+	var configPath string
+	switch runtime.GOOS {
+	case "windows":
+		appData := os.Getenv("APPDATA")
+		configPath = filepath.Join(appData, "GitHub Copilot", "apps.json")
+	case "darwin":
+		home, _ := os.UserHomeDir()
+		// Try multiple possible locations
+		paths := []string{
+			filepath.Join(home, ".config", "github-copilot", "apps.json"),
+			filepath.Join(home, "Library", "Application Support", "GitHub Copilot", "apps.json"),
+		}
+		
+		// Find the first existing path
+		for _, path := range paths {
+			if _, err := os.Stat(path); err == nil {
+				configPath = path
+				break
+			}
+		}
+	case "linux":
+		home, _ := os.UserHomeDir()
+		configPath = filepath.Join(home, ".config", "github-copilot", "apps.json")
+	}
+	
+	return configPath
+}
+
+func main() {
+	configPath := getCopilotConfigPath()
+	fmt.Printf("Copilot configuration path: %s\n", configPath)
+	
+	// Read the configuration file
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		fmt.Printf("Error reading config: %v\n", err)
+		return
+	}
+	
+	fmt.Printf("Found configuration file with %d bytes\n", len(data))
+	// Process the configuration as needed
+}
+```
+
 ## GitHub Copilot API Integration
 
 This application integrates with the GitHub Copilot API in three main ways:
@@ -225,7 +439,39 @@ Use the `--disable-auth` flag to completely disable API key validation, allowing
 ./coproxy --disable-auth
 ```
 
+When running with `--disable-auth`:
+- No API keys or tokens are required in requests
+- The server automatically generates a temporary secret for internal use
+- Requests are processed with administrative privileges
+
 This is useful for development environments where you want to bypass authentication checks.
+
+## Complete CLI Command Reference
+
+The application supports the following command-line flags:
+
+| Flag                    | Description                                            | Example                                    |
+| ----------------------- | ------------------------------------------------------ | ------------------------------------------ |
+| `--get-api-key[=TOKEN]` | Retrieves a Copilot API key using a GitHub OAuth token | `./coproxy --get-api-key="ghu_token"`      |
+| `--test-auth[=KEY]`     | Tests the validity of a Copilot API key                | `./coproxy --test-auth`                    |
+| `--test-call=PROMPT`    | Makes a test call with the provided prompt             | `./coproxy --test-call="Write a function"` |
+| `--disable-auth`        | Disables API key validation (development only)         | `./coproxy --disable-auth`                 |
+| `--monitor-vscode`      | Monitors VS Code's Copilot API calls in real-time      | `./coproxy --monitor-vscode`               |
+| `--debug`               | Enables verbose debug logging                          | `./coproxy --debug`                        |
+| `--port=PORT`           | Sets the server port (default: 8080)                   | `./coproxy --port=8081`                    |
+| `--config=PATH`         | Specifies a custom configuration file path             | `./coproxy --config=/path/to/config.json`  |
+| `--log-file=PATH`       | Sets a custom log file path                            | `./coproxy --log-file=./logs/app.log`      |
+| `--rate-limit=NUM`      | Sets the rate limit for API requests                   | `./coproxy --rate-limit=100`               |
+| `--version`             | Displays the application version                       | `./coproxy --version`                      |
+| `--help`                | Displays help information                              | `./coproxy --help`                         |
+
+Multiple flags can be combined:
+
+```bash
+./coproxy --debug --port=8888 --disable-auth
+```
+
+Environment variables take precedence over command-line flags for equivalent settings.
 
 ## Environment Variables
 
@@ -250,11 +496,72 @@ COPILOT_OAUTH_TOKEN=ghu_your_token_here
 
 ## Troubleshooting
 
-For common issues and solutions, see the detailed documentation:
+### Common Issues
 
-```bash
-go doc
-```
+#### Authentication Failures
+
+1. **Invalid or Expired Token**
+   - **Symptom**: "Authorization failed" or "Token expired" errors
+   - **Solution**: Generate a new API key using `./coproxy --get-api-key`
+   - **Check**: Verify token validity with `./coproxy --test-auth`
+
+2. **Configuration Path Issues**
+   - **Symptom**: "Could not find local Copilot configuration" errors
+   - **Solution**: Manually specify config path using `COPILOT_CONFIG_PATH` environment variable
+   - **Locations**: Check that configuration files exist in the expected locations (see "Reading Local Copilot Tokens" section)
+
+3. **Rate Limiting**
+   - **Symptom**: HTTP 429 errors or "Too many requests" messages
+   - **Solution**: Implement backoff strategy or increase rate limits with `RATE_LIMIT_REQUESTS` environment variable
+   - **Tip**: Check `copilot_requests.log` for request patterns
+
+#### API Connection Issues
+
+1. **Network Problems**
+   - **Symptom**: "Connection refused" or timeout errors
+   - **Solution**: Check network connectivity and proxy settings
+   - **Debug**: Run with `DEBUG=true` for verbose logging
+
+2. **API Format Changes**
+   - **Symptom**: Unexpected response formats or new error types
+   - **Solution**: Update to latest version of the application
+   - **Check**: Compare API version in headers (current: `X-GitHub-API-Version: 2025-04-01`)
+
+#### Server Configuration
+
+1. **Port Conflicts**
+   - **Symptom**: "Address already in use" error on startup
+   - **Solution**: Change port with `PORT=8081 ./coproxy`
+
+2. **Missing Dependencies**
+   - **Symptom**: Runtime errors or panic messages
+   - **Solution**: Run `go mod tidy` to update dependencies
+
+### Diagnostic Tools
+
+1. **Request Logging**
+   - Enable detailed logging with `DEBUG=true LOG_REQUESTS=true ./coproxy`
+   - Review logs in `copilot_requests.log`
+
+2. **VS Code Extension Monitoring**
+   - Monitor VS Code's Copilot extension using the built-in tool:
+   ```bash
+   ./coproxy --monitor-vscode
+   ```
+   - This captures and displays real-time API calls made by VS Code to GitHub Copilot
+
+3. **Live Debugging**
+   - Enable live debugging with `./coproxy --debug`
+   - Prints detailed information about API calls, token handling, and internal processes
+
+### Getting Help
+
+If you encounter issues not covered here, please:
+1. Check the GitHub Issues section for similar problems
+2. Enable debug logging and capture relevant error messages
+3. Submit a detailed bug report with environment information and steps to reproduce
+
+For urgent assistance, tag maintainers in the Issues section.
 
 ## Contributing
 
