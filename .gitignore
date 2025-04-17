@@ -9,3 +9,4 @@ __pychache__
 !.env.template
 **/.env
 !**/.env.template
+.aider*

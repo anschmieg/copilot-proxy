@@ -18,6 +18,8 @@ import (
 const (
 	// CopilotChatCompletionURL is the endpoint for GitHub Copilot chat completions.
 	CopilotChatCompletionURL = "https://api.githubcopilot.com/chat/completions"
+	// CopilotModelsURL is the endpoint for listing GitHub Copilot models
+	CopilotModelsURL = "/models"
 )
 
 var (
@@ -45,6 +47,27 @@ func NewService() *Service {
 // GetConfig returns the service's configuration
 func (s *Service) GetConfig() *Config {
 	return s.config
+}
+
+// getProxyEndpoint extracts the proxy endpoint hostname from the Copilot API token.
+func (s *Service) getProxyEndpoint() string {
+	for _, part := range strings.Split(s.config.CopilotAPIKey, ";") {
+		if strings.HasPrefix(part, "proxy-ep=") {
+			return strings.TrimPrefix(part, "proxy-ep=")
+		}
+	}
+	return "api.githubcopilot.com"
+}
+
+// getProxyURL builds a full URL to the Copilot API for the given path.
+func (s *Service) getProxyURL(path string) string {
+	// Build full API URL using proxy endpoint
+	host := s.getProxyEndpoint()
+	// If endpoint includes scheme, use it directly
+	if strings.HasPrefix(host, "http://") || strings.HasPrefix(host, "https://") {
+		return host + path
+	}
+	return "https://" + host + path
 }
 
 // CompletionRequest contains the data needed for a completion request
@@ -95,45 +118,62 @@ func (s *Service) GetModelUsage(userID uint64, model string) models.ModelUsage {
 
 // PerformCompletion handles a GitHub Copilot completion request
 func (s *Service) PerformCompletion(req CompletionRequest) (*http.Response, error) {
-	// Normalize model name
-	model := normalizeModelName(req.Model)
-
-	// Get current usage
-	usage := s.GetModelUsage(req.Token.UserID, model)
-
-	// Validate access (just rate limiting for personal use)
-	if err := ValidateAccess(req.Token, model, usage); err != nil {
-		return nil, err
+	// Determine which Copilot API model to use
+	copilotModels, err := s.FetchModels()
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch models: %w", err)
 	}
-
-	// Call Copilot API
-	return s.callCopilotAPI(req.ProviderRequest)
-}
-
-// normalizeModelName ensures we use the correct model name
-func normalizeModelName(name string) string {
-	models := DefaultModels()
-	var bestMatch string
-	var bestMatchLength int
-
-	for _, model := range models {
-		if strings.HasPrefix(name, model.Name) {
-			if len(model.Name) > bestMatchLength {
-				bestMatch = model.Name
-				bestMatchLength = len(model.Name)
+	var modelID string
+	// 1) exact ID or Name or prefix match
+	for _, m := range copilotModels {
+		if m.ID == req.Model || m.Name == req.Model || strings.HasPrefix(m.ID, req.Model) {
+			modelID = m.ID
+			break
+		}
+	}
+	// 2) fallback to first containing match
+	if modelID == "" {
+		for _, m := range copilotModels {
+			if strings.Contains(m.ID, req.Model) {
+				modelID = m.ID
+				break
 			}
 		}
 	}
-
-	if bestMatch != "" {
-		return bestMatch
+	// 3) if still no match, error
+	if modelID == "" {
+		return nil, fmt.Errorf("unknown model: %s", req.Model)
 	}
 
+	// Get current usage
+	usage := s.GetModelUsage(req.Token.UserID, modelID)
+
+	// Validate access (personal use: always allowed)
+	if err := ValidateAccess(req.Token, modelID, usage); err != nil {
+		return nil, err
+	}
+
+	// Call Copilot API passing the selected model
+	return s.callCopilotAPI(req.ProviderRequest, modelID)
+}
+
+// normalizeModelName ensures we use a valid model ID, falling back to default
+func normalizeModelName(name string) string {
+	for _, m := range DefaultModels() {
+		if m.ID == name || m.Name == name {
+			return m.ID
+		}
+	}
+	// Fallback to first default model
+	defaults := DefaultModels()
+	if len(defaults) > 0 {
+		return defaults[0].ID
+	}
 	return name
 }
 
 // callCopilotAPI calls the GitHub Copilot API for chat completions.
-func (s *Service) callCopilotAPI(providerRequest string) (*http.Response, error) {
+func (s *Service) callCopilotAPI(providerRequest, modelID string) (*http.Response, error) {
 	apiKey := s.config.CopilotAPIKey
 	if apiKey == "" {
 		return nil, ErrCopilotAPIKeyMissing
@@ -144,10 +184,8 @@ func (s *Service) callCopilotAPI(providerRequest string) (*http.Response, error)
 		return nil, err
 	}
 
-	// Set default values if not specified
-	if _, ok := requestData["model"]; !ok {
-		requestData["model"] = "gpt-4o"
-	}
+	// Always set the model to the normalized model ID
+	requestData["model"] = modelID
 
 	if _, ok := requestData["temperature"]; !ok {
 		requestData["temperature"] = 0
@@ -168,7 +206,8 @@ func (s *Service) callCopilotAPI(providerRequest string) (*http.Response, error)
 	}
 
 	// Create HTTP request
-	req, err := http.NewRequest("POST", CopilotChatCompletionURL, bytes.NewBuffer(body))
+	url := s.getProxyURL("/chat/completions")
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -217,6 +256,72 @@ func (s *Service) callCopilotAPI(providerRequest string) (*http.Response, error)
 	return s.httpClient.Do(req)
 }
 
+// FetchModels calls the GitHub Copilot API to retrieve available models.
+func (s *Service) FetchModels() ([]models.LanguageModel, error) {
+	apiKey := s.config.CopilotAPIKey
+	if apiKey == "" {
+		return nil, ErrCopilotAPIKeyMissing
+	}
+
+	// Build URL using proxy endpoint
+	reqURL := s.getProxyURL(CopilotModelsURL)
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create models request: %w", err)
+	}
+
+	// Required IDE auth headers
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	editorVersion := s.config.EditorVersion
+	if editorVersion == "" {
+		editorVersion = "vscode/1.99.2"
+	}
+	pluginVersion := s.config.EditorPluginVersion
+	if pluginVersion == "" {
+		pluginVersion = "copilot-chat/0.26.3"
+	}
+	// Set headers
+	req.Header.Set("Editor-Version", editorVersion)
+	req.Header.Set("Editor-Plugin-Version", pluginVersion)
+	req.Header.Set("Copilot-Integration-ID", "vscode-chat")
+	req.Header.Set("User-Agent", "GitHubCopilotChat/"+strings.TrimPrefix(pluginVersion, "copilot-chat/"))
+	req.Header.Set("OpenAI-Intent", "conversation-agent")
+	req.Header.Set("X-GitHub-API-Version", "2025-04-01")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch models: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("models API returned %s: %s", resp.Status, string(body))
+	}
+
+	// Decode models response which contains `data` array of model objects
+	var wrapper struct {
+		Data []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err != nil {
+		return nil, fmt.Errorf("failed to decode models response: %w", err)
+	}
+	// Map to our LanguageModel type
+	modelsList := make([]models.LanguageModel, len(wrapper.Data))
+	for i, m := range wrapper.Data {
+		modelsList[i] = models.LanguageModel{
+			ID:       m.ID,
+			Name:     m.Name,
+			Provider: models.ProviderCopilot,
+			Enabled:  true,
+		}
+	}
+	return modelsList, nil
+}
+
 // generateRequestID creates a unique request ID for Copilot API calls
 func generateRequestID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x",
@@ -249,7 +354,7 @@ func (s *Service) SubmitTestPrompt(prompt string) (string, error) {
 	}
 
 	// Call the Copilot API
-	resp, err := s.callCopilotAPI(string(providerRequest))
+	resp, err := s.callCopilotAPI(string(providerRequest), "gpt-4o")
 	if err != nil {
 		return "", fmt.Errorf("API call failed: %w", err)
 	}
@@ -319,7 +424,7 @@ func (s *Service) SubmitStreamingTestPrompt(prompt string) error {
 	}
 
 	// Call the Copilot API
-	resp, err := s.callCopilotAPI(string(providerRequest))
+	resp, err := s.callCopilotAPI(string(providerRequest), "gpt-4o")
 	if err != nil {
 		return fmt.Errorf("API call failed: %w", err)
 	}

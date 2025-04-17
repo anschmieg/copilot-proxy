@@ -52,9 +52,9 @@ func AuthorizeAccessToModel(token *models.LLMToken, provider models.LanguageMode
 
 // AuthorizeAccessForCountry checks if a model can be accessed from the user's country
 func AuthorizeAccessForCountry(countryCode *string, provider models.LanguageModelProvider) error {
-	// In development, we may not have country codes
+	// In development or if country code is unknown, allow access
 	if countryCode == nil || *countryCode == "XX" {
-		return ErrNoCountryCode
+		return nil
 	}
 
 	// Block TOR network
@@ -77,9 +77,9 @@ func CheckRateLimit(modelName string, usage models.ModelUsage) error {
 	availableModels := DefaultModels()
 	var model *models.LanguageModel
 
-	// Find the model configuration
+	// Find the model configuration by ID or Name
 	for _, m := range availableModels {
-		if m.Name == modelName {
+		if m.ID == modelName || m.Name == modelName {
 			modelCopy := m // Create a copy to avoid potential issues
 			model = &modelCopy
 			break
@@ -124,6 +124,6 @@ func SetErrorResponseHeaders(w http.ResponseWriter, err error) {
 
 // ValidateAccess performs simplified authorization checks for personal use
 func ValidateAccess(token *models.LLMToken, modelName string, usage models.ModelUsage) error {
-	// Just check rate limits for personal use
-	return CheckRateLimit(modelName, usage)
+	// Personal use: no rate limits enforced, always allow
+	return nil
 }

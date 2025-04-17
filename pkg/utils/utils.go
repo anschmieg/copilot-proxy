@@ -15,8 +15,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// CopilotChatCompletionURL is the endpoint for GitHub Copilot chat completions.
-const CopilotChatCompletionURL = "https://api.githubcopilot.com/chat/completions"
+// CopilotChatCompletionPath is the path for GitHub Copilot chat completions.
+const CopilotChatCompletionPath = "/chat/completions"
 
 // SomeUtilityFunction performs a specific utility task.
 // It simply wraps the input string with a "Processed:" prefix.
@@ -44,6 +44,26 @@ func GetEnvWithDefault(name, defaultValue string) string {
 		return defaultValue
 	}
 	return value
+}
+
+// getProxyEndpoint extracts the proxy endpoint hostname from a Copilot API key
+func getProxyEndpoint(apiKey string) string {
+	for _, part := range strings.Split(apiKey, ";") {
+		if strings.HasPrefix(part, "proxy-ep=") {
+			return strings.TrimPrefix(part, "proxy-ep=")
+		}
+	}
+	// default GitHub Copilot host
+	return "api.githubcopilot.com"
+}
+
+// getProxyURL builds a full URL for the given path using the proxy endpoint in the API key
+func getProxyURL(apiKey, path string) string {
+	host := getProxyEndpoint(apiKey)
+	if strings.HasPrefix(host, "http://") || strings.HasPrefix(host, "https://") {
+		return host + path
+	}
+	return "https://" + host + path
 }
 
 // CallCopilotAPI sends a request to the GitHub Copilot API and returns the response.
@@ -116,8 +136,9 @@ func CallCopilotAPI(apiKey string, payload map[string]interface{}) (map[string]i
 	// Generate a unique request ID
 	requestID := fmt.Sprintf("%s-%s", time.Now().Format("20060102T150405.000Z"), uuid.New().String()[:8])
 
-	// Create request with all required headers
-	req, err := http.NewRequest("POST", CopilotChatCompletionURL, bytes.NewBuffer(body))
+	// Build the completion URL via proxy endpoint
+	url := getProxyURL(apiKey, CopilotChatCompletionPath)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
 	if err != nil {
 		return nil, err
 	}

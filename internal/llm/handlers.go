@@ -87,22 +87,24 @@ func (s *ServerState) HandleListModels(w http.ResponseWriter, r *http.Request) {
 
 	countryCode := getCountryCode(r)
 
-	availableModels := DefaultModels()
-	var accessibleModels []models.LanguageModel
+	// Fetch the actual list of models from Copilot API
+	availableModels, err := s.Service.FetchModels()
+	if err != nil {
+		http.Error(w, "failed to fetch models: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	accessibleModels := []models.LanguageModel{}
 
 	for _, model := range availableModels {
-		// Check if model is accessible from this country code
-		if err := AuthorizeAccessForCountry(countryCode, models.ProviderCopilot); err == nil {
-			// Check if model is available in the user's plan
-			if err := AuthorizeAccessToModel(token, models.ProviderCopilot, model.Name); err == nil {
+		if err := AuthorizeAccessForCountry(countryCode, model.Provider); err == nil {
+			if err := AuthorizeAccessToModel(token, model.Provider, model.Name); err == nil {
 				accessibleModels = append(accessibleModels, model)
 			}
 		}
 	}
 
-	response := ListModelsResponse{
-		Models: accessibleModels,
-	}
+	response := ListModelsResponse{Models: accessibleModels}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
