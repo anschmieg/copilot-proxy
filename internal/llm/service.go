@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"copilot-proxy/pkg/models"
+	"copilot-proxy/pkg/utils"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,10 +30,13 @@ var (
 
 // Service manages GitHub Copilot API interactions
 type Service struct {
-	config     *Config
-	httpClient *http.Client
-	usageLock  sync.RWMutex
-	userUsage  map[uint64]models.ModelUsage
+	config       *Config
+	httpClient   *http.Client
+	usageLock    sync.RWMutex
+	userUsage    map[uint64]models.ModelUsage
+	authMu       sync.Mutex
+	modelsCache  []models.LanguageModel
+	lastAuthTime time.Time
 }
 
 // NewService creates a new LLM service
@@ -118,11 +122,12 @@ func (s *Service) GetModelUsage(userID uint64, model string) models.ModelUsage {
 
 // PerformCompletion handles a GitHub Copilot completion request
 func (s *Service) PerformCompletion(req CompletionRequest) (*http.Response, error) {
-	// Determine which Copilot API model to use
-	copilotModels, err := s.FetchModels()
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch models: %w", err)
+	// Ensure we have a valid API key and model list (30m TTL)
+	if err := s.ensureAuthAndModels(); err != nil {
+		return nil, fmt.Errorf("authorization refresh failed: %w", err)
 	}
+	copilotModels := s.modelsCache
+
 	var modelID string
 	// 1) exact ID or Name or prefix match
 	for _, m := range copilotModels {
@@ -155,21 +160,6 @@ func (s *Service) PerformCompletion(req CompletionRequest) (*http.Response, erro
 
 	// Call Copilot API passing the selected model
 	return s.callCopilotAPI(req.ProviderRequest, modelID)
-}
-
-// normalizeModelName ensures we use a valid model ID, falling back to default
-func normalizeModelName(name string) string {
-	for _, m := range DefaultModels() {
-		if m.ID == name || m.Name == name {
-			return m.ID
-		}
-	}
-	// Fallback to first default model
-	defaults := DefaultModels()
-	if len(defaults) > 0 {
-		return defaults[0].ID
-	}
-	return name
 }
 
 // callCopilotAPI calls the GitHub Copilot API for chat completions.
@@ -320,6 +310,34 @@ func (s *Service) FetchModels() ([]models.LanguageModel, error) {
 		}
 	}
 	return modelsList, nil
+}
+
+// ensureAuthAndModels ensures the API key is valid and models are cached.
+func (s *Service) ensureAuthAndModels() error {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+
+	// Check if models cache is still valid
+	if time.Since(s.lastAuthTime) < 30*time.Minute && len(s.modelsCache) > 0 {
+		return nil
+	}
+
+	// Refresh API key from local Copilot config
+	token, err := utils.GetCopilotToken()
+	if err != nil {
+		return fmt.Errorf("failed to refresh API key: %w", err)
+	}
+	s.config.CopilotAPIKey = token
+
+	// Fetch models and update cache
+	models, err := s.FetchModels()
+	if err != nil {
+		return err
+	}
+
+	s.modelsCache = models
+	s.lastAuthTime = time.Now()
+	return nil
 }
 
 // generateRequestID creates a unique request ID for Copilot API calls

@@ -41,6 +41,16 @@
 //   - VS Code Copilot extension monitoring
 //   - Comprehensive CLI options
 //
+// # Copilot Integration
+//
+// The application integrates with GitHub Copilot using the following mechanisms:
+//  1. Direct API key usage for authentication
+//  2. GitHub OAuth token exchange for API keys
+//  3. Lazy authentication and model list caching
+//     - Fetches and caches the Copilot API key and available model list on first request
+//     - Refreshes both only after a 30-minute TTL expires
+//     - Idle service does not poll GitHub until needed
+//
 // # Getting Started
 //
 // To use this package as a library:

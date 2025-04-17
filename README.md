@@ -108,6 +108,8 @@ curl http://localhost:8080/openai \
   }'
 ```
 
+Note on model selection: the proxy fetches and caches the GitHub Copilot model list on the first request (and every 30 minutes thereafter). You may specify any model ID (exact match), a prefix, or any substring to select a model. If no model matches, the proxy will return an `unknown model` error.
+
 ## Code Examples
 
 ### Basic OpenAI-Compatible Client
@@ -328,7 +330,7 @@ This application integrates with the GitHub Copilot API in three main ways:
 
 ### 1. Getting an API Key
 
-The application can retrieve a Copilot API key using a GitHub OAuth token:
+The proxy lazily loads and caches your Copilot API key and model list on the first request, then re-validates (refreshes) both only after 30 minutes have elapsed. Idle services do not call GitHub.
 
 ```bash
 # Use OAuth token from argument
