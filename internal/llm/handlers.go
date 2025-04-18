@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"copilot-proxy/pkg/models"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 )
 
 // ServerState holds the state for the Copilot LLM server
@@ -112,6 +114,9 @@ func (s *ServerState) HandleListModels(w http.ResponseWriter, r *http.Request) {
 
 // HandleCompletion handles the completion endpoint
 func (s *ServerState) HandleCompletion(w http.ResponseWriter, r *http.Request) {
+	// Track if client requested streaming
+	var isStream bool
+
 	token, err := s.validateToken(r)
 	if err != nil {
 		if errors.Is(err, ErrTokenExpired) {
@@ -131,8 +136,26 @@ func (s *ServerState) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body.Close()
 
-	// Create a new reader for the request body for later use
-	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+	// Remove any 'stream' from incoming payload before processing
+	var incoming map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &incoming); err == nil {
+		// Determine if streaming was requested
+		isStream, _ = incoming["stream"].(bool)
+		// Clean out the stream key for internal processing
+		delete(incoming, "stream")
+		// Re-marshal to remove 'stream' from bodyBytes
+		cleanBody, err2 := json.Marshal(incoming)
+		if err2 == nil {
+			bodyBytes = cleanBody
+		}
+
+		// Use this for branching later
+		r = r.Clone(r.Context())
+		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+	} else {
+		// Fall back if unmarshal fails
+		isStream = false
+	}
 
 	// First, try to parse as standard CompletionParams
 	var params CompletionParams
@@ -183,6 +206,7 @@ func (s *ServerState) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 		CurrentSpending: currentSpending,
 	}
 
+	// Always use streaming on the Copilot API side
 	resp, err := s.Service.PerformCompletion(req)
 	if err != nil {
 		SetErrorResponseHeaders(w, err)
@@ -191,27 +215,68 @@ func (s *ServerState) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer resp.Body.Close()
-
-	// Set up streaming response
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	// Process and stream the response
+	// Process streaming SSE for both modes
 	reader, err := s.Service.ProcessStreamingResponse(resp, token.UserID, params.Model)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	defer reader.Close()
-
-	// Copy the reader to the response writer
-	_, err = io.Copy(w, reader)
-	if err != nil {
-		// Connection likely closed by client, just log it
+	if !isStream {
+		// Accumulate all chunks into one message
+		var full strings.Builder
+		scanner := bufio.NewScanner(reader)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				break
+			}
+			var chunk map[string]interface{}
+			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+				continue
+			}
+			choices, ok := chunk["choices"].([]interface{})
+			if !ok || len(choices) == 0 {
+				continue
+			}
+			choice, _ := choices[0].(map[string]interface{})
+			delta, _ := choice["delta"].(map[string]interface{})
+			if content, ok := delta["content"].(string); ok {
+				full.WriteString(content)
+			}
+		}
+		// Write JSON response
+		w.Header().Set("Content-Type", "application/json")
+		out := map[string]interface{}{ // minimal OpenAI response
+			"choices": []map[string]interface{}{{
+				"message":       map[string]string{"role": "assistant", "content": full.String()},
+				"finish_reason": "stop", "index": 0,
+			}},
+		}
+		json.NewEncoder(w).Encode(out)
 		return
 	}
+	// Streaming SSE: proxy raw event stream line-by-line with flush
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher, _ := w.(http.Flusher)
+	bufReader := bufio.NewReader(reader)
+	for {
+		line, err := bufReader.ReadBytes('\n')
+		if len(line) > 0 {
+			w.Write(line)
+			flusher.Flush()
+		}
+		if err != nil {
+			break
+		}
+	}
+	return
 }
 
 // RegisterHandlers registers the LLM handlers with a router

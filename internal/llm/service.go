@@ -11,6 +11,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -129,14 +130,23 @@ func (s *Service) PerformCompletion(req CompletionRequest) (*http.Response, erro
 	copilotModels := s.modelsCache
 
 	var modelID string
-	// 1) exact ID or Name or prefix match
+	// 1) exact ID or Name match
 	for _, m := range copilotModels {
-		if m.ID == req.Model || m.Name == req.Model || strings.HasPrefix(m.ID, req.Model) {
+		if m.ID == req.Model || m.Name == req.Model {
 			modelID = m.ID
 			break
 		}
 	}
-	// 2) fallback to first containing match
+	// 2) prefix match
+	if modelID == "" {
+		for _, m := range copilotModels {
+			if strings.HasPrefix(m.ID, req.Model) {
+				modelID = m.ID
+				break
+			}
+		}
+	}
+	// 3) fallback to first containing match
 	if modelID == "" {
 		for _, m := range copilotModels {
 			if strings.Contains(m.ID, req.Model) {
@@ -145,7 +155,7 @@ func (s *Service) PerformCompletion(req CompletionRequest) (*http.Response, erro
 			}
 		}
 	}
-	// 3) if still no match, error
+	// 4) if still no match, error
 	if modelID == "" {
 		return nil, fmt.Errorf("unknown model: %s", req.Model)
 	}
@@ -174,23 +184,21 @@ func (s *Service) callCopilotAPI(providerRequest, modelID string) (*http.Respons
 		return nil, err
 	}
 
-	// Always set the model to the normalized model ID
-	requestData["model"] = modelID
-
-	if _, ok := requestData["temperature"]; !ok {
-		requestData["temperature"] = 0
+	// Build clean request payload for Copilot API
+	cleanData := map[string]interface{}{"model": modelID, "stream": true}
+	if msgs, ok := requestData["messages"]; ok {
+		cleanData["messages"] = msgs
 	}
-
-	if _, ok := requestData["top_p"]; !ok {
-		requestData["top_p"] = 1
+	if temp, ok := requestData["temperature"]; ok {
+		cleanData["temperature"] = temp
 	}
-
-	if _, ok := requestData["max_tokens"]; !ok {
-		requestData["max_tokens"] = 4096
+	if topP, ok := requestData["top_p"]; ok {
+		cleanData["top_p"] = topP
 	}
-
-	// Serialize the request body
-	body, err := json.Marshal(requestData)
+	if maxTok, ok := requestData["max_tokens"]; ok {
+		cleanData["max_tokens"] = maxTok
+	}
+	body, err := json.Marshal(cleanData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -242,6 +250,11 @@ func (s *Service) callCopilotAPI(providerRequest, modelID string) (*http.Respons
 	if s.config.VSCodeSessionID != "" {
 		req.Header.Set("Vscode-Sessionid", s.config.VSCodeSessionID)
 	}
+
+	// Debug: log outgoing HTTP request body
+	reqBodyBytes, _ := io.ReadAll(req.Body)
+	// Reset body after reading
+	req.Body = io.NopCloser(bytes.NewBuffer(reqBodyBytes))
 
 	return s.httpClient.Do(req)
 }
@@ -317,24 +330,30 @@ func (s *Service) ensureAuthAndModels() error {
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
 
-	// Check if models cache is still valid
+	// If cache is fresh, nothing to do
 	if time.Since(s.lastAuthTime) < 30*time.Minute && len(s.modelsCache) > 0 {
 		return nil
 	}
 
-	// Refresh API key from local Copilot config
+	// Try to load a fresh Copilot token from VS Code config
 	token, err := utils.GetCopilotToken()
 	if err != nil {
-		return fmt.Errorf("failed to refresh API key: %w", err)
+		// Fallback to previously set config or environment var
+		token = s.config.CopilotAPIKey
+		if token == "" {
+			token = os.Getenv("COPILOT_API_KEY")
+		}
+		if token == "" {
+			return fmt.Errorf("failed to refresh API key: %w", err)
+		}
 	}
 	s.config.CopilotAPIKey = token
 
-	// Fetch models and update cache
+	// Fetch the live model list
 	models, err := s.FetchModels()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to fetch models: %w", err)
 	}
-
 	s.modelsCache = models
 	s.lastAuthTime = time.Now()
 	return nil

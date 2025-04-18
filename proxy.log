@@ -1,0 +1,25 @@
+2025/04/18 16:50:26 Loaded environment variables from .env file in current directory
+2025/04/18 16:50:26 API authorization is disabled - all requests will be accepted
+2025/04/18 16:50:26 Initializing GitHub Copilot API key...
+Found COPILOT_OAUTH_TOKEN in environment variables: ghu_...BkO0
+Found OAuth token in environment variables, attempting to get Copilot API key...
+2025/04/18 16:50:28 Successfully initialized GitHub Copilot API key
+2025/04/18 16:50:28 No LLM_API_SECRET set, using generated secret for this session
+2025/04/18 16:50:28 Starting server on :8080...
+[DEBUG] Handler cleaned body: {"messages":[{"content":"Reverse a string in Go","role":"user"}],"model":"gpt-4o"}
+[DEBUG] Handler isStream: false
+[DEBUG] callCopilotAPI raw requestData: map[messages:[map[content:Reverse a string in Go role:user]] model:gpt-4o provider:copilot]
+[DEBUG] callCopilotAPI cleaned payload: {"messages":[{"content":"Reverse a string in Go","role":"user"}],"model":"gpt-4o-mini","stream":true}
+[DEBUG] Handler cleaned body: {
+    "model":"gpt-4o",
+    "messages":[{"role":"user","content":"Reverse a string in Go"}],
+  }
+[DEBUG] Handler isStream: false
+[DEBUG] Handler cleaned body: {"messages":[{"content":"Reverse a string in Go","role":"user"}],"model":"gpt-4o"}
+[DEBUG] Handler isStream: false
+[DEBUG] callCopilotAPI raw requestData: map[messages:[map[content:Reverse a string in Go role:user]] model:gpt-4o provider:copilot]
+[DEBUG] callCopilotAPI cleaned payload: {"messages":[{"content":"Reverse a string in Go","role":"user"}],"model":"gpt-4o-mini","stream":true}
+[DEBUG] Handler cleaned body: {"messages":[{"content":"Reverse a string in Go","role":"user"}],"model":"gpt-4o"}
+[DEBUG] Handler isStream: false
+[DEBUG] callCopilotAPI raw requestData: map[messages:[map[content:Reverse a string in Go role:user]] model:gpt-4o provider:copilot]
+[DEBUG] callCopilotAPI cleaned payload: {"messages":[{"content":"Reverse a string in Go","role":"user"}],"model":"gpt-4o-mini","stream":true}
