@@ -1,3 +1,8 @@
+# ❗WARNING: Not actively maintained ❗
+> You might want to check out e.g. PublicAffairs/openai-github-copilot instead. Search for it with your favorite search engine. 
+
+---
+
 # GitHub Copilot Client for Go
 
 A Go application that enables you to use the GitHub Copilot Chat API like any other OpenAI-compatible model. This client integrates with your local GitHub Copilot configuration to provide AI completions through a convenient API.
