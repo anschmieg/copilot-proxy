@@ -129,35 +129,29 @@ func (s *Service) PerformCompletion(req CompletionRequest) (*http.Response, erro
 	}
 	copilotModels := s.modelsCache
 
-	var modelID string
-	// 1) exact ID or Name match
+	modelID := req.Model
+	found := false
 	for _, m := range copilotModels {
-		if m.ID == req.Model || m.Name == req.Model {
-			modelID = m.ID
+		if m.ID == modelID {
+			found = true
 			break
 		}
 	}
-	// 2) prefix match
-	if modelID == "" {
+	if !found {
+		// Refresh cache and try again
+		if err := s.ensureAuthAndModels(); err != nil {
+			return nil, fmt.Errorf("authorization refresh failed: %w", err)
+		}
+		copilotModels = s.modelsCache
 		for _, m := range copilotModels {
-			if strings.HasPrefix(m.ID, req.Model) {
-				modelID = m.ID
+			if m.ID == modelID {
+				found = true
 				break
 			}
 		}
 	}
-	// 3) fallback to first containing match
-	if modelID == "" {
-		for _, m := range copilotModels {
-			if strings.Contains(m.ID, req.Model) {
-				modelID = m.ID
-				break
-			}
-		}
-	}
-	// 4) if still no match, error
-	if modelID == "" {
-		return nil, fmt.Errorf("unknown model: %s", req.Model)
+	if !found {
+		return nil, fmt.Errorf("unknown model: %s", modelID)
 	}
 
 	// Get current usage
@@ -168,7 +162,7 @@ func (s *Service) PerformCompletion(req CompletionRequest) (*http.Response, erro
 		return nil, err
 	}
 
-	// Call Copilot API passing the selected model
+	// Call Copilot API passing the selected model (no modifications)
 	return s.callCopilotAPI(req.ProviderRequest, modelID)
 }
 

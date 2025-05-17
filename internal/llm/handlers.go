@@ -6,10 +6,13 @@ import (
 	"copilot-proxy/pkg/models"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 // ServerState holds the state for the Copilot LLM server
@@ -74,42 +77,106 @@ func getCountryCode(r *http.Request) *string {
 	return &country
 }
 
+// Helper for OpenAI-style error responses
+func writeOpenAIError(w http.ResponseWriter, status int, message, errType string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"error": map[string]interface{}{
+			"message": message,
+			"type":    errType,
+			"param":   nil,
+			"code":    nil,
+		},
+	})
+}
+
 // HandleListModels handles the list models endpoint
 func (s *ServerState) HandleListModels(w http.ResponseWriter, r *http.Request) {
 	token, err := s.validateToken(r)
 	if err != nil {
 		if errors.Is(err, ErrTokenExpired) {
 			w.Header().Set("X-LLM-Token-Expired", "true")
-			http.Error(w, "token expired", http.StatusUnauthorized)
+			writeOpenAIError(w, http.StatusUnauthorized, "token expired", "invalid_request_error")
 		} else {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			writeOpenAIError(w, http.StatusUnauthorized, "unauthorized", "invalid_request_error")
 		}
 		return
 	}
 
 	countryCode := getCountryCode(r)
 
-	// Fetch the actual list of models from Copilot API
-	availableModels, err := s.Service.FetchModels()
+	// --- Directly proxy the upstream Copilot API response, but filter if needed ---
+	apiKey := s.Service.config.CopilotAPIKey
+	if apiKey == "" {
+		writeOpenAIError(w, http.StatusInternalServerError, "missing Copilot API key", "internal_error")
+		return
+	}
+	reqURL := s.Service.getProxyURL(CopilotModelsURL)
+	req, err := http.NewRequest("GET", reqURL, nil)
 	if err != nil {
-		http.Error(w, "failed to fetch models: "+err.Error(), http.StatusBadGateway)
+		writeOpenAIError(w, http.StatusBadGateway, "failed to create models request: "+err.Error(), "api_error")
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	editorVersion := s.Service.config.EditorVersion
+	if editorVersion == "" {
+		editorVersion = "vscode/1.99.2"
+	}
+	pluginVersion := s.Service.config.EditorPluginVersion
+	if pluginVersion == "" {
+		pluginVersion = "copilot-chat/0.26.3"
+	}
+	req.Header.Set("Editor-Version", editorVersion)
+	req.Header.Set("Editor-Plugin-Version", pluginVersion)
+	req.Header.Set("Copilot-Integration-ID", "vscode-chat")
+	req.Header.Set("User-Agent", "GitHubCopilotChat/"+strings.TrimPrefix(pluginVersion, "copilot-chat/"))
+	req.Header.Set("OpenAI-Intent", "conversation-agent")
+	req.Header.Set("X-GitHub-API-Version", "2025-04-01")
+
+	resp, err := s.Service.httpClient.Do(req)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "failed to fetch models: "+err.Error(), "api_error")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		writeOpenAIError(w, http.StatusBadGateway, "models API returned "+resp.Status+": "+string(body), "api_error")
 		return
 	}
 
-	accessibleModels := []models.LanguageModel{}
+	// Read the upstream response as raw JSON
+	var upstream struct {
+		Object string                   `json:"object"`
+		Data   []map[string]interface{} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&upstream); err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "failed to decode models response: "+err.Error(), "api_error")
+		return
+	}
 
-	for _, model := range availableModels {
-		if err := AuthorizeAccessForCountry(countryCode, model.Provider); err == nil {
-			if err := AuthorizeAccessToModel(token, model.Provider, model.Name); err == nil {
-				accessibleModels = append(accessibleModels, model)
+	// Filter models according to authorization/country if needed
+	filtered := make([]map[string]interface{}, 0, len(upstream.Data))
+	for _, model := range upstream.Data {
+		provider, _ := model["provider"].(string)
+		name, _ := model["name"].(string)
+		if err := AuthorizeAccessForCountry(countryCode, models.LanguageModelProvider(provider)); err == nil {
+			if err := AuthorizeAccessToModel(token, models.LanguageModelProvider(provider), name); err == nil {
+				// Ensure "object": "model" is present for OpenAI compatibility
+				model["object"] = "model"
+				filtered = append(filtered, model)
 			}
 		}
 	}
 
-	response := ListModelsResponse{Models: accessibleModels}
-
+	out := map[string]interface{}{
+		"object": "list",
+		"data":   filtered,
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(out)
 }
 
 // HandleCompletion handles the completion endpoint
@@ -121,9 +188,9 @@ func (s *ServerState) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, ErrTokenExpired) {
 			w.Header().Set("X-LLM-Token-Expired", "true")
-			http.Error(w, "token expired", http.StatusUnauthorized)
+			writeOpenAIError(w, http.StatusUnauthorized, "token expired", "invalid_request_error")
 		} else {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			writeOpenAIError(w, http.StatusUnauthorized, "unauthorized", "invalid_request_error")
 		}
 		return
 	}
@@ -131,7 +198,7 @@ func (s *ServerState) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 	// Read the request body
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "error reading request body", http.StatusBadRequest)
+		writeOpenAIError(w, http.StatusBadRequest, "error reading request body", "invalid_request_error")
 		return
 	}
 	r.Body.Close()
@@ -164,7 +231,7 @@ func (s *ServerState) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 		// Convert the OpenAI format to our internal format
 		var openAIRequest map[string]interface{}
 		if err := json.Unmarshal(bodyBytes, &openAIRequest); err != nil {
-			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+			writeOpenAIError(w, http.StatusBadRequest, "invalid request body: "+err.Error(), "invalid_request_error")
 			return
 		}
 
@@ -182,7 +249,7 @@ func (s *ServerState) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 		// Convert the request to a string for our internal format
 		providerRequestBytes, err := json.Marshal(openAIRequest)
 		if err != nil {
-			http.Error(w, "error formatting request: "+err.Error(), http.StatusInternalServerError)
+			writeOpenAIError(w, http.StatusInternalServerError, "error formatting request: "+err.Error(), "internal_error")
 			return
 		}
 
@@ -209,8 +276,7 @@ func (s *ServerState) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 	// Always use streaming on the Copilot API side
 	resp, err := s.Service.PerformCompletion(req)
 	if err != nil {
-		SetErrorResponseHeaders(w, err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
 		return
 	}
 
@@ -218,13 +284,18 @@ func (s *ServerState) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 	// Process streaming SSE for both modes
 	reader, err := s.Service.ProcessStreamingResponse(resp, token.UserID, params.Model)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeOpenAIError(w, http.StatusInternalServerError, err.Error(), "internal_error")
 		return
 	}
 	defer reader.Close()
 	if !isStream {
 		// Accumulate all chunks into one message
 		var full strings.Builder
+		var usage struct {
+			PromptTokens     int
+			CompletionTokens int
+			TotalTokens      int
+		}
 		scanner := bufio.NewScanner(reader)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -248,14 +319,37 @@ func (s *ServerState) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 			if content, ok := delta["content"].(string); ok {
 				full.WriteString(content)
 			}
+			// Try to extract usage if present
+			if u, ok := chunk["usage"].(map[string]interface{}); ok {
+				if v, ok := u["prompt_tokens"].(float64); ok {
+					usage.PromptTokens = int(v)
+				}
+				if v, ok := u["completion_tokens"].(float64); ok {
+					usage.CompletionTokens = int(v)
+				}
+				if v, ok := u["total_tokens"].(float64); ok {
+					usage.TotalTokens = int(v)
+				}
+			}
 		}
-		// Write JSON response
+		// Write OpenAI-compliant response
 		w.Header().Set("Content-Type", "application/json")
-		out := map[string]interface{}{ // minimal OpenAI response
+		now := time.Now().Unix()
+		id := fmt.Sprintf("chatcmpl-%d%06d", now, rand.Intn(1000000))
+		out := map[string]interface{}{
+			"id":      id,
+			"object":  "chat.completion",
+			"created": now,
+			"model":   params.Model,
 			"choices": []map[string]interface{}{{
 				"message":       map[string]string{"role": "assistant", "content": full.String()},
 				"finish_reason": "stop", "index": 0,
 			}},
+			"usage": map[string]interface{}{
+				"prompt_tokens":     usage.PromptTokens,
+				"completion_tokens": usage.CompletionTokens,
+				"total_tokens":      usage.TotalTokens,
+			},
 		}
 		json.NewEncoder(w).Encode(out)
 		return
@@ -282,9 +376,9 @@ func (s *ServerState) HandleCompletion(w http.ResponseWriter, r *http.Request) {
 // RegisterHandlers registers the LLM handlers with a router
 func (s *ServerState) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/models", s.HandleListModels)
+	mux.HandleFunc("/v1/models", s.HandleListModels) // OpenAI alias
 	mux.HandleFunc("/completion", s.HandleCompletion)
-
-	// Add OpenAI-compatible paths
 	mux.HandleFunc("/openai", s.HandleCompletion)
 	mux.HandleFunc("/v1/chat/completions", s.HandleCompletion)
+	// (Optional) Add /v1/completions and /v1/embeddings handlers here if implemented
 }
